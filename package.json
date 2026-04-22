@@ -1,0 +1,52 @@
+{
+  "name": "finance-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "自动化浏览器工具 - 多商家端数据采集",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev:vue\" \"npm run dev:electron\"",
+    "dev:vue": "cd src && npx vite",
+    "dev:electron": "npx tsc -p electron/tsconfig.json && node scripts/wait-vite.js && electron .",
+    "dev:electron:fast": "node scripts/wait-vite.js && electron .",
+    "build:electron": "npx tsc -p electron/tsconfig.json",
+    "build:vue": "cd src && npx vite build",
+    "build": "npm run build:vue && npm run build:electron && electron-builder --win --publish never",
+    "build:mac": "npm run build:vue && npm run build:electron && electron-builder --mac --publish never",
+    "preview": "cd src && npx vite preview"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.3.3"
+  },
+  "build": {
+    "appId": "com.finance-tools.app",
+    "productName": "FinanceTools",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist-electron/**/*",
+      "src/dist/**/*",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      { "from": "python", "to": "python" },
+      { "from": "shared", "to": "shared" },
+      { "from": "resources/python-runtime", "to": "python-runtime" }
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "target": ["dmg"]
+    }
+  }
+}

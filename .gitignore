@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+python/.venv/
+venv/
+ENV/
+env/
+
+# Database files
+shared/db/*.db
+shared/db/*.db-wal
+shared/db/*.db-shm
+
+# Exports
+exports/
+
+# Key files (sensitive)
+**/.key
+**/finance-tools.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Electron
+release/
+
+# Playwright
+playwright-report/
+test-results/

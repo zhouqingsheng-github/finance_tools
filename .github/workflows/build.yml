@@ -1,0 +1,122 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash    # 统一用 bash，避免 PowerShell cd 行为不一致
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # ====== 下载 Python Embeddable（内嵌到 exe 中）======
+      - name: Cache Python Embedded
+        id: cache-python
+        uses: actions/cache@v4
+        with:
+          path: python-embed
+          key: python311-embed-windows-${{ runner.os }}
+          
+      - name: Download & Setup Python Embedded
+        if: steps.cache-python.outputs.cache-hit != 'true'
+        run: |
+          echo "=== Downloading Python 3.11 Embeddable ==="
+          curl -L -o python-311-embed.zip "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+          mkdir -p python-embed
+          unzip -q python-311-embed.zip -d python-embed
+          rm python-311-embed.zip
+
+      - name: Install pip in Python Embedded
+        run: |
+          echo "=== Installing get-pip.py ==="
+          curl -L -o python-embed/get-pip.py "https://bootstrap.pypa.io/get-pip.py"
+          python-embed/python.exe python-embed/get-pip.py --no-warn-script-location
+          rm python-embed/get-pip.py
+
+          echo "=== Enable site-packages (uncomment import site) ==="
+          # Python Embeddable 默认注释了 import site，导致 pip 安装后无法使用
+          sed -i 's/^#import site/import site/' python-embed/python311._pth
+
+          echo "=== Installing project dependencies ==="
+          python-embed/python.exe -m pip install --upgrade pip
+          python-embed/python.exe -m pip install -r python/requirements.txt
+
+      - name: Copy Python runtime to resources
+        run: |
+          mkdir -p resources/python-runtime/
+          cp -r python-embed/* resources/python-runtime/
+          echo "Python runtime size:"
+          du -sh resources/python-runtime/
+
+      # ====== 前端依赖 ======
+      - name: Install frontend dependencies
+        run: |
+          npm install
+          (cd src && npm install)
+
+      # ====== 安装 Playwright（用于 Python Embedded 内的浏览器）======
+      - name: Install Playwright browsers
+        run: |
+          resources/python-runtime/python.exe -m playwright install chromium
+
+      - name: Build (Windows EXE)
+        env:
+          GH_TOKEN: ""
+        run: npm run build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FinanceTools-Windows-x64-${{ github.sha }}
+          path: release/*.exe
+          retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          npm install
+          (cd src && npm install)
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+
+      - name: Install Playwright browsers
+        run: |
+          python -m playwright install chromium
+
+      - name: Build (macOS DMG)
+        run: npm run build:mac
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FinanceTools-macOS-${{ github.sha }}
+          path: release/*.dmg
+          retention-days: 30

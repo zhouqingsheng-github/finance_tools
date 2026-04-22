@@ -1,0 +1,21 @@
+# Finance Tools - Python 后端依赖
+# 核心依赖
+playwright>=1.40.0
+httpx[http2]>=0.25.0
+
+# 数据处理
+cryptography>=41.0.0
+pycryptodome>=3.19.0
+
+# 验证码识别（可选）
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+
+# 数据导出
+openpyxl>=3.1.2
+
+# 日志与工具
+colorlog>=6.7.0
+
+# 类型支持
+typing-extensions>=4.8.0
