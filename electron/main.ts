@@ -325,6 +325,8 @@ app.whenReady().then(() => {
     ? join(process.resourcesPath, 'python')
     : join(__dirname, '..', 'python')
   process.env.PYTHONPATH = pythonDir
+  // 强制 UTF-8 编码，解决 Windows 打包后 GBK 编码导致 emoji/中文报错
+  process.env.PYTHONIOENCODING = 'utf-8'
   console.log('[Main] PYTHONPATH:', process.env.PYTHONPATH)
 
   pythonManager = new PythonProcessManager(pythonExe, [pythonScript])
