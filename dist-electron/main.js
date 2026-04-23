@@ -228,8 +228,8 @@ function registerIpcHandlers() {
     electron_1.ipcMain.handle('data:list', async (_event, params) => {
         return pythonManager?.sendRequest('data.list', params || {});
     });
-    electron_1.ipcMain.handle('data:export', async (_event, merchantId) => {
-        return pythonManager?.sendRequest('data.export', { merchantId: merchantId || null });
+    electron_1.ipcMain.handle('data:export', async (_event, params) => {
+        return pythonManager?.sendRequest('data.export', params || {});
     });
     electron_1.ipcMain.handle('data:delete', async (_event, id) => {
         return pythonManager?.sendRequest('data.delete', { id });
@@ -292,6 +292,25 @@ electron_1.app.whenReady().then(() => {
         ? (0, path_1.join)(process.resourcesPath, 'python')
         : (0, path_1.join)(__dirname, '..', 'python');
     process.env.PYTHONPATH = pythonDir;
+    // 强制 UTF-8 编码，解决 Windows 打包后 GBK 编码导致 emoji/中文报错
+    process.env.PYTHONIOENCODING = 'utf-8';
+    // 打包后：数据库存放在用户数据目录，重装应用不丢失数据
+    if (electron_1.app.isPackaged) {
+        const userDataDbDir = (0, path_1.join)(electron_1.app.getPath('userData'), 'db');
+        process.env.FINANCE_TOOLS_DB = (0, path_1.join)(userDataDbDir, 'finance_tools.db');
+        console.log('[Main] Database path (userData):', process.env.FINANCE_TOOLS_DB);
+    }
+    else {
+        console.log('[Main] Dev mode: database in shared/db/');
+    }
+    // 打包后：指定 Playwright 浏览器路径（随 extraResources 一起打包）
+    if (electron_1.app.isPackaged) {
+        const pwBrowserPath = (0, path_1.join)(process.resourcesPath, 'ms-playwright');
+        if ((0, fs_1.existsSync)(pwBrowserPath)) {
+            process.env.PLAYWRIGHT_BROWSERS_PATH = pwBrowserPath;
+            console.log('[Main] PLAYWRIGHT_BROWSERS_PATH:', pwBrowserPath);
+        }
+    }
     console.log('[Main] PYTHONPATH:', process.env.PYTHONPATH);
     pythonManager = new python_manager_1.PythonProcessManager(pythonExe, [pythonScript]);
     // 监听 Python 进程状态变化

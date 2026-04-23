@@ -37,7 +37,7 @@ export interface ElectronAPI {
 
   // 数据管理
   dataList: (params?: any) => Promise<any[]>
-  dataExport: (merchantId?: string) => Promise<any>
+  dataExport: (merchantId?: string, ids?: number[]) => Promise<any>
   dataDelete: (id: string) => Promise<void>
   showSaveDialog: (options?: any) => Promise<{ canceled: boolean; filePath?: string }>
   copyFile: (srcPath: string, destPath: string) => Promise<string>

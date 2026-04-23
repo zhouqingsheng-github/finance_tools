@@ -12,9 +12,13 @@ const merchantStore = useMerchantStore()
 
 const records = ref<CollectedRecord[]>([])
 const total = ref(0)
-const loading = ref(false)
+const loading = ref(false)       // 首次加载
+const loadingMore = ref(false)   // 滚动加载更多
 const exporting = ref(false)
 const selectedIds = ref<number[]>([])
+
+// 是否还有更多数据（用于控制是否显示加载更多）
+const hasMore = computed(() => records.value.length < total.value)
 
 // 获取数据条数
 function getDataCount(record: CollectedRecord): number {
@@ -30,40 +34,86 @@ const isAllSelected = computed(() =>
 
 const filters = reactive({
   merchantId: '',
-  page: 1,
-  pageSize: 15
+  pageSize: 20  // 每次加载条数，滚动加载可以适当加大
 })
+
+// 滚动观察器引用
+let observer: IntersectionObserver | null = null
+const sentinelRef = ref<HTMLElement | null>(null)
 
 onMounted(async () => {
   await Promise.all([
     fetchRecords(),
     merchantStore.fetchMerchants()
   ])
+  // 初始化 IntersectionObserver，监听底部哨兵元素进入视口
+  setupScrollObserver()
 })
 
+/** 设置滚动加载的观察器 */
+function setupScrollObserver() {
+  if (observer) observer.disconnect()
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting && hasMore.value && !loading.value && !loadingMore.value) {
+        loadMore()
+      }
+    },
+    { rootMargin: '200px' }  // 提前 200px 触发加载
+  )
+}
+
+/** 观察哨兵元素 */
+function observeSentinel() {
+  if (observer && sentinelRef.value) {
+    observer.observe(sentinelRef.value)
+  }
+}
+
+/** 首次加载 / 重置加载 */
 async function fetchRecords() {
+  // 断开旧观察器
+  if (observer) observer.disconnect()
+
   loading.value = true
   try {
     const result = await dataApi.list({
       merchantId: filters.merchantId || undefined,
-      page: filters.page,
+      page: 1,
       pageSize: filters.pageSize
     })
     records.value = result.records || []
     total.value = result.total || 0
-    selectedIds.value = [] // 切换页清空选择
+    selectedIds.value = [] // 重置清空选择
+
+    // 重新挂载观察器
+    observeSentinel()
   } finally {
     loading.value = false
   }
 }
 
-function handleSearch() {
-  filters.page = 1
-  fetchRecords()
+/** 滚动加载更多 */
+async function loadMore() {
+  if (!hasMore.value || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const nextPage = Math.floor(records.value.length / filters.pageSize) + 1
+    const result = await dataApi.list({
+      merchantId: filters.merchantId || undefined,
+      page: nextPage,
+      pageSize: filters.pageSize
+    })
+    const newRecords = result.records || []
+    // 追加到现有列表
+    records.value.push(...newRecords)
+    total.value = result.total || 0
+  } finally {
+    loadingMore.value = false
+  }
 }
 
-function handlePageChange(page: number) {
-  filters.page = page
+function handleSearch() {
   fetchRecords()
 }
 
@@ -91,7 +141,10 @@ async function handleDelete(id: number) {
   if (!confirm('确定要删除这条记录吗？')) return
   try {
     await dataApi.delete(String(id))
-    await fetchRecords()
+    // 从当前列表移除（不重新请求）
+    records.value = records.value.filter(r => String(r.id) !== String(id))
+    selectedIds.value = selectedIds.value.filter(sid => sid !== id)
+    total.value--
   } catch (e: any) {
     alert(`删除失败：${e.message}`)
   }
@@ -103,37 +156,29 @@ async function handleBatchDelete() {
   if (!confirm(`确定要删除选中的 ${selectedIds.value.length} 条记录吗？`)) return
   try {
     await Promise.all(selectedIds.value.map(id => dataApi.delete(String(id))))
+    const removedSet = new Set(selectedIds.value.map(String))
+    records.value = records.value.filter(r => !removedSet.has(String(r.id)))
+    total.value -= selectedIds.value.length
     selectedIds.value = []
-    await fetchRecords()
   } catch (e: any) {
     alert(`批量删除失败：${e.message}`)
   }
 }
 
 function formatDate(timestamp: number) {
-  // 后端存储的是秒级 Unix 时间戳，JS Date 需要毫秒
   return new Date(timestamp * 1000).toLocaleString('zh-CN')
-}
-
-/** 获取原始数据预览文本 */
-function getRawPreview(record: CollectedRecord): string {
-  const raw = (record as any).raw_data
-  if (!raw) return '-'
-  if (typeof raw === 'string') return raw.substring(0, 100)
-  try {
-    const str = JSON.stringify(raw)
-    return str.length > 100 ? str.substring(0, 100) + '...' : str
-  } catch {
-    return String(raw).substring(0, 100)
-  }
 }
 
 async function handleExport() {
   exporting.value = true
   try {
-    // 1. 弹出"另存为"对话框让用户选择保存位置
+    const ids: number[] | undefined = selectedIds.value.length > 0
+      ? [...selectedIds.value]
+      : undefined
+
     const now = new Date()
-    const defaultName = `数据导出_${now.getFullYear()}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate().toString().padStart(2,'0')}.xlsx`
+    const suffix = ids ? `_选${ids.length}条` : ''
+    const defaultName = `数据导出_${now.getFullYear()}${(now.getMonth()+1).toString().padStart(2,'0')}${now.getDate().toString().padStart(2,'0')}${suffix}.xlsx`
     const result = await window.electronAPI.showSaveDialog({
       title: '导出 Excel 文件',
       defaultPath: defaultName,
@@ -142,12 +187,10 @@ async function handleExport() {
 
     if (result.canceled || !result.filePath) return
 
-    // 2. 调用后端生成文件（返回临时路径）
-    const srcPath = await dataApi.exportToExcel(filters.merchantId || undefined)
-
-    // 3. 将生成的文件复制到用户选择的路径
+    const merchantId = filters.merchantId ? String(filters.merchantId) : undefined
+    const srcPath = await dataApi.exportToExcel(merchantId, ids)
     const savedPath = await window.electronAPI.copyFile(srcPath, result.filePath)
-    alert(`导出成功！\n${savedPath}`)
+    alert(`导出成功！共 ${ids ? ids.length : total} 条记录\n${savedPath}`)
   } catch (e: any) {
     alert(`导出失败：${e.message}`)
   } finally {
@@ -165,20 +208,20 @@ async function handleExport() {
         <p class="text-sm text-dark-400 mt-1">每次任务执行产生一条采集记录，展示字段映射后的结构化数据</p>
       </div>
       <div class="flex items-center gap-3">
-        <button 
+        <button
           v-if="selectedIds.length > 0"
           @click="handleBatchDelete"
           class="flex items-center gap-2 px-3 py-2 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors text-sm"
         >
           <Trash2 class="w-4 h-4" /> 删除选中 ({{ selectedIds.length }})
         </button>
-        <button 
+        <button
           @click="fetchRecords"
           class="flex items-center gap-2 px-3 py-2 rounded-lg bg-dark-800/50 text-dark-300 hover:text-dark-100 hover:bg-dark-700/50 transition-colors text-sm"
         >
           <RefreshCw class="w-4 h-4" /> 刷新
         </button>
-        <button 
+        <button
           @click="handleExport"
           :disabled="exporting || total === 0"
           class="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 text-white font-medium transition-all shadow-lg shadow-primary/25 active:scale-[0.98] text-sm disabled:opacity-50 disabled:cursor-not-allowed"
@@ -198,28 +241,31 @@ async function handleExport() {
           <label class="block text-xs text-dark-500 mb-1.5">商家来源</label>
           <select v-model="filters.merchantId" @change="handleSearch" class="input-field cursor-pointer text-sm">
             <option value="">全部商家</option>
-            <option 
-              v-for="m in merchantStore.merchants" 
+            <option
+              v-for="m in merchantStore.merchants"
               :key="m.id" :value="m.id"
             >{{ m.name }}</option>
           </select>
         </div>
 
-        <!-- 操作按钮 -->
-        <div class="flex gap-2 ml-auto">
-          <span v-if="total > 0" class="text-xs text-dark-500 self-center">
-            共 {{ total }} 条执行记录
+        <!-- 统计信息 -->
+        <div class="flex gap-3 ml-auto items-center self-end">
+          <span v-if="total > 0" class="text-xs text-dark-500">
+            共 {{ total }} 条 · 已加载 {{ records.length }} 条
+          </span>
+          <span v-if="!hasMore && records.length > 0" class="inline-flex items-center px-2 py-0.5 rounded-md text-xs bg-emerald-500/10 text-emerald-400">
+            已全部加载
           </span>
         </div>
       </div>
     </div>
 
-    <!-- 数据表格 -->
-    <div class="glass-card overflow-hidden">
-      <div class="overflow-x-auto">
+    <!-- 数据表格容器（可滚动） -->
+    <div class="glass-card overflow-hidden flex flex-col" style="max-height: calc(100vh - 260px);">
+      <div class="overflow-x-auto overflow-y-auto" style="max-height: calc(100vh - 310px);">
         <table class="w-full min-w-[700px]">
-          <thead>
-            <tr class="border-b border-dark-700/50">
+          <thead class="sticky top-0 z-10">
+            <tr class="border-b border-dark-700/50 bg-dark-900/95 backdrop-blur">
               <th class="px-4 py-3.5 text-left text-xs font-medium text-dark-500 uppercase tracking-wider w-12">
                 <input type="checkbox" class="rounded border-dark-600 bg-dark-800" :checked="isAllSelected" @change="toggleSelectAll" />
               </th>
@@ -231,8 +277,8 @@ async function handleExport() {
           </thead>
           <tbody class="divide-y divide-dark-800/40">
             <template v-if="!loading && records.length > 0">
-              <tr 
-                v-for="record in records" 
+              <tr
+                v-for="record in records"
                 :key="record.id"
                 class="hover:bg-dark-800/30 transition-colors group"
               >
@@ -251,7 +297,7 @@ async function handleExport() {
                   </span>
                 </td>
                 <td class="px-4 py-3 text-right">
-                  <button 
+                  <button
                     @click="handleDelete(record.id as unknown as number)"
                     class="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-dark-700/50 text-dark-400 hover:text-rose-400 transition-all"
                     title="删除"
@@ -261,10 +307,10 @@ async function handleExport() {
                 </td>
               </tr>
             </template>
-            
-            <!-- 加载状态 -->
+
+            <!-- 首次加载状态 -->
             <tr v-if="loading">
-              <td colspan="5" class="px-4 py-12 text-center">
+              <td colspan="5" class="px-4 py-16 text-center">
                 <RefreshCw class="w-6 h-6 mx-auto animate-spin text-primary" />
                 <p class="text-sm text-dark-500 mt-2">加载数据中...</p>
               </td>
@@ -275,29 +321,32 @@ async function handleExport() {
               <td colspan="5" class="px-4 py-16 text-center">
                 <FileSpreadsheet class="w-12 h-12 mx-auto text-dark-700 mb-3" />
                 <p class="text-dark-400">暂无采集数据</p>
-                <p class="text-sm text-dark-600 mt-1">执行任务后结果将显示在此处（每次执行一条记录）</p>
+                <p class="text-sm text-dark-600 mt-1">执行任务后结果将显示在此处</p>
+              </td>
+            </tr>
+
+            <!-- 滚动加载更多 - 哨兵元素 -->
+            <tr v-if="records.length > 0 && hasMore" ref="sentinelEl">
+              <td colspan="5" class="px-4 py-8 text-center">
+                <div ref="sentinelRef" class="h-1"></div>
+                <template v-if="loadingMore">
+                  <RefreshCw class="w-5 h-5 mx-auto animate-spin text-primary mb-1" />
+                  <p class="text-xs text-dark-500">加载更多...</p>
+                </template>
+                <template v-else>
+                  <p class="text-xs text-dark-600">向下滚动加载更多</p>
+                </template>
+              </td>
+            </tr>
+
+            <!-- 全部加载完毕提示 -->
+            <tr v-if="records.length > 0 && !hasMore && records.length > filters.pageSize">
+              <td colspan="5" class="px-4 py-6 text-center">
+                <p class="text-xs text-dark-600">— 已加载全部 {{ records.length }} 条记录 —</p>
               </td>
             </tr>
           </tbody>
         </table>
-      </div>
-
-      <!-- 分页 -->
-      <div v-if="total > filters.pageSize" class="flex items-center justify-between px-4 py-3 border-t border-dark-700/50">
-        <span class="text-xs text-dark-500">
-          共 {{ total }} 条记录
-        </span>
-        <div class="flex items-center gap-1.5">
-          <button 
-            v-for="page in Math.ceil(total / filters.pageSize)" 
-            :key="page"
-            @click="handlePageChange(page)"
-            class="w-8 h-8 rounded-lg text-xs font-medium transition-colors"
-            :class="page === filters.page ? 'bg-primary text-white' : 'text-dark-400 hover:bg-dark-800/50'"
-          >
-            {{ page }}
-          </button>
-        </div>
       </div>
     </div>
   </div>
@@ -321,5 +370,10 @@ async function handleExport() {
 }
 .input-field option {
   background: #0f172a;
+}
+
+/* 表头固定时的阴影效果 */
+thead tr th {
+  box-shadow: 0 1px 0 0 rgba(51,65,85,0.5);
 }
 </style>

@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 数据管理
   dataList: (params?: any) => ipcRenderer.invoke('data:list', params),
-  dataExport: (merchantId?: string) => ipcRenderer.invoke('data:export', merchantId),
+  dataExport: (merchantId?: string, ids?: number[]): Promise<any> => ipcRenderer.invoke('data:export', { merchantId, ids }),
   dataDelete: (id: string) => ipcRenderer.invoke('data:delete', id),
   showSaveDialog: (options?: any) => ipcRenderer.invoke('dialog:save', options),
   copyFile: (srcPath: string, destPath: string) => ipcRenderer.invoke('file:copy', srcPath, destPath),

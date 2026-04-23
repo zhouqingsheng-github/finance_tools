@@ -569,13 +569,20 @@ class DataRepository:
             conditions.append("merchant_id = ?")
             params.append(filters['merchantId'])
         
-        if filters.get('taskId'):
-            conditions.append("task_id = ?")
-            params.append(filters['taskId'])
+        if filters.get('id'):
+            conditions.append("id = ?")
+            params.append(filters['id'])
+
+        if filters.get('ids'):
+            id_list = filters['ids']
+            if isinstance(id_list, list) and len(id_list) > 0:
+                placeholders = ','.join(['?' for _ in id_list])
+                conditions.append(f"id IN ({placeholders})")
+                params.extend(id_list)
 
         where_clause = " AND ".join(conditions)
         offset = (page - 1) * page_size
-        
+        logger.info(f"数据查询条件: {where_clause} offset {offset} limit {page_size}")
         try:
             # 查询总数
             count_cursor = conn.execute(
@@ -583,7 +590,7 @@ class DataRepository:
                 tuple(params)
             )
             total = count_cursor.fetchone()['total']
-            
+            logger.info(f"Total collected_data: {total}")
             # 查询数据列表
             cursor = conn.execute(f"""
                 SELECT * FROM collected_data 
@@ -617,7 +624,7 @@ class DataRepository:
         finally:
             conn.close()
 
-    def export_to_excel(self, merchant_id: str = None, task_id: str = None) -> str:
+    def export_to_excel(self, merchant_id: str = None, id: str = None, ids: list = None) -> str:
         """
         导出数据到 Excel 文件
         每行 = 一次任务执行结果
@@ -625,7 +632,8 @@ class DataRepository:
         
         Args:
             merchant_id: 商家ID（可选）
-            task_id: 任务ID（可选）
+            id: 单条记录ID（可选，兼容旧接口）
+            ids: 批量导出的记录ID列表（可选）
         
         Returns:
             导出文件路径
@@ -637,8 +645,10 @@ class DataRepository:
         filters = {}
         if merchant_id:
             filters['merchantId'] = merchant_id
-        if task_id:
-            filters['taskId'] = task_id
+        if id:
+            filters['id'] = id
+        if ids:
+            filters['ids'] = ids
         
         records, _ = self.list(filters, page=1, page_size=50000)
         

@@ -53,7 +53,13 @@ class JsonRpcServer:
         from db.repositories import MerchantRepository, DataRepository, TaskRepository
         
         # 初始化组件
-        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared', 'db', 'finance_tools.db')
+        # 数据库路径：优先使用环境变量 FINANCE_TOOLS_DB（Electron 启动时设置）
+        # 打包后指向 userData 目录（重装不丢失），开发模式回退到 shared/db/
+        _env_db = os.environ.get('FINANCE_TOOLS_DB')
+        if _env_db:
+            db_path = _env_db
+        else:
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared', 'db', 'finance_tools.db')
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         
         self.merchant_repo = MerchantRepository(db_path)
@@ -299,8 +305,8 @@ class JsonRpcServer:
     
     def handle_data_export(self, params: dict) -> str:
         merchant_id = params.get('merchantId')
-        task_id = params.get('taskId')
-        export_path = self.data_repo.export_to_excel(merchant_id, task_id)
+        ids = params.get('ids')
+        export_path = self.data_repo.export_to_excel(merchant_id, ids=ids)
         return export_path
     
     def handle_data_delete(self, params: dict) -> bool:

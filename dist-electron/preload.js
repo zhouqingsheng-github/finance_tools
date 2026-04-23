@@ -29,7 +29,7 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     taskConfigParseCurl: (curl) => electron_1.ipcRenderer.invoke('taskConfig:parseCurl', curl),
     // 数据管理
     dataList: (params) => electron_1.ipcRenderer.invoke('data:list', params),
-    dataExport: (merchantId) => electron_1.ipcRenderer.invoke('data:export', merchantId),
+    dataExport: (merchantId, ids) => electron_1.ipcRenderer.invoke('data:export', { merchantId, ids }),
     dataDelete: (id) => electron_1.ipcRenderer.invoke('data:delete', id),
     showSaveDialog: (options) => electron_1.ipcRenderer.invoke('dialog:save', options),
     copyFile: (srcPath, destPath) => electron_1.ipcRenderer.invoke('file:copy', srcPath, destPath),

@@ -13,19 +13,19 @@ logger = logging.getLogger('finance-tools.credential')
 
 class CredentialManager:
     """凭证（Cookie/Token）管理器"""
-    
+
     # Cookie 默认有效期（秒），默认 2 小时
-    DEFAULT_EXPIRY = 7200
-    
+    DEFAULT_EXPIRY = 60 * 24 * 60 * 60
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._encryption_key: Optional[bytes] = None
-        
+
     def _get_encryption_key(self) -> bytes:
         """获取/生成加密密钥"""
         if self._encryption_key:
             return self._encryption_key
-        
+
         try:
             from utils.crypto import get_or_create_key
             self._encryption_key = get_or_create_key()
@@ -33,16 +33,16 @@ class CredentialManager:
             logger.warning(f"Encryption key generation failed: {e}, using fallback")
             # 使用固定密钥（仅用于开发环境）
             self._encryption_key = b'finance-tools-dev-key-32bytes!!'
-        
+
         return self._encryption_key
 
     async def save_credentials(
-        self, 
-        merchant_id: str, 
-        cookies: list[dict],
-        current_url: str,
-        expiry_seconds: int | None = None,
-        storage_state: dict | None = None
+            self,
+            merchant_id: str,
+            cookies: list[dict],
+            current_url: str,
+            expiry_seconds: int | None = None,
+            storage_state: dict | None = None
     ) -> dict:
         """
         保存登录凭证到数据库
@@ -59,23 +59,23 @@ class CredentialManager:
         """
         try:
             from utils.crypto import encrypt_data
-            
+
             key = self._get_encryption_key()
             expiry = expiry_seconds or self.DEFAULT_EXPIRY
-            
+
             # 提取关键 Cookie 信息
             cookie_str = '; '.join([f"{c.get('name', '')}={c.get('value', '')}" for c in cookies])
-            
+
             # 加密存储
             encrypted_cookies = encrypt_data(json.dumps(cookies), key)
             encrypted_cookie_string = encrypt_data(cookie_str, key)
-            
+
             # 加密完整存储状态（包含 localStorage）
             encrypted_storage_state = ''
             if storage_state:
                 encrypted_storage_state = encrypt_data(json.dumps(storage_state), key)
                 logger.info(f"Storage state saved with {len(storage_state.get('origins', []))} origins")
-            
+
             credential_record = {
                 'merchant_id': merchant_id,
                 'encrypted_cookies': encrypted_cookies,
@@ -87,18 +87,18 @@ class CredentialManager:
                 'source_url': current_url,
                 'is_valid': True
             }
-            
+
             # 保存到数据库
             from db.repositories import CredentialRepository
             repo = CredentialRepository(self.db_path)
             saved = repo.upsert(merchant_id, credential_record)
-            
+
             # 保存凭证过期时间，供商家列表查询凭证状态
             self._update_merchant_credential_expiry(merchant_id, int(credential_record['expires_at']))
-            
+
             logger.info(f"Credentials saved for merchant {merchant_id}, expires in {expiry}s")
             return saved
-            
+
         except Exception as e:
             logger.error(f"Failed to save credentials: {e}")
             raise
@@ -116,30 +116,30 @@ class CredentialManager:
         try:
             from utils.crypto import decrypt_data
             from db.repositories import CredentialRepository
-            
+
             repo = CredentialRepository(self.db_path)
             record = repo.get_by_merchant(merchant_id)
-            
+
             if not record:
                 return None
-            
+
             # 检查是否过期
             if record.get('expires_at', 0) < time.time():
                 logger.info(f"Credentials expired for merchant {merchant_id}")
                 repo.invalidate(merchant_id)
                 return None
-            
+
             # 解密 Cookie
             key = self._get_encryption_key()
             decrypted = decrypt_data(record['encrypted_cookies'], key)
             cookies = json.loads(decrypted)
-            
+
             return {
                 **record,
                 'cookies': cookies,
                 'is_expired': False
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get credentials: {e}")
             return None
@@ -157,18 +157,18 @@ class CredentialManager:
         try:
             from utils.crypto import decrypt_data
             from db.repositories import CredentialRepository
-            
+
             repo = CredentialRepository(self.db_path)
             record = repo.get_by_merchant(merchant_id)
-            
+
             if not record or not record.get('encrypted_storage_state'):
                 return None
-            
+
             # 解密存储状态
             key = self._get_encryption_key()
             decrypted = decrypt_data(record['encrypted_storage_state'], key)
             return json.loads(decrypted)
-            
+
         except Exception as e:
             logger.warning(f"Failed to get storage state: {e}")
             return None
@@ -186,7 +186,7 @@ class CredentialManager:
         cred = self.get_credentials(merchant_id)
         if not cred or not cred.get('cookies'):
             return None
-        
+
         cookies = cred['cookies']
         cookie_parts = [f"{c['name']}={c['value']}" for c in cookies]
         return '; '.join(cookie_parts)
@@ -197,7 +197,7 @@ class CredentialManager:
         return cred is not None and not cred.get('is_expired')
 
     async def verify_credential_by_request(
-        self, merchant_id: str, url: str, login_url: str = ''
+            self, merchant_id: str, url: str, login_url: str = ''
     ) -> bool:
         """
         通过实际 HTTP 请求验证凭证是否有效
@@ -240,9 +240,9 @@ class CredentialManager:
             logger.info(f"凭证验证: 请求 {url}，Cookie 数量: {len(cookies)}")
 
             async with httpx.AsyncClient(
-                follow_redirects=False,
-                timeout=15.0,
-                verify=False
+                    follow_redirects=False,
+                    timeout=15.0,
+                    verify=False
             ) as client:
                 response = await client.get(
                     url,
@@ -378,6 +378,6 @@ class CredentialManager:
         cred = self.get_credentials(merchant_id)
         if not cred:
             return True
-        
+
         remaining = cred.get('expires_at', 0) - int(time.time())
         return remaining < threshold_seconds
