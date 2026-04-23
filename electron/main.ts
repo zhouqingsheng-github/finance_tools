@@ -327,6 +327,14 @@ app.whenReady().then(() => {
   process.env.PYTHONPATH = pythonDir
   // 强制 UTF-8 编码，解决 Windows 打包后 GBK 编码导致 emoji/中文报错
   process.env.PYTHONIOENCODING = 'utf-8'
+  // 打包后：指定 Playwright 浏览器路径（随 extraResources 一起打包）
+  if (app.isPackaged) {
+    const pwBrowserPath = join(process.resourcesPath, 'ms-playwright')
+    if (existsSync(pwBrowserPath)) {
+      process.env.PLAYWRIGHT_BROWSERS_PATH = pwBrowserPath
+      console.log('[Main] PLAYWRIGHT_BROWSERS_PATH:', pwBrowserPath)
+    }
+  }
   console.log('[Main] PYTHONPATH:', process.env.PYTHONPATH)
 
   pythonManager = new PythonProcessManager(pythonExe, [pythonScript])

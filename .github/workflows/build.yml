@@ -66,10 +66,14 @@ jobs:
           npm install
           (cd src && npm install)
 
-      # ====== 安装 Playwright（用于 Python Embedded 内的浏览器）======
-      - name: Install Playwright browsers
+      # ====== 安装 Playwright（打包进 exe，指定安装目录到 resources/）======
+      - name: Install Playwright browsers (packaged)
         run: |
-          resources/python-runtime/python.exe -m playwright install chromium
+          # 指定安装目录到 resources/ms-playwright/，随 extraResources 一起打包进 exe
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/resources/ms-playwright" \
+            resources/python-runtime/python.exe -m playwright install chromium
+          echo "Playwright browser size:"
+          du -sh resources/ms-playwright/
 
       - name: Build (Windows EXE)
         env:
@@ -107,9 +111,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r python/requirements.txt
 
-      - name: Install Playwright browsers
+      - name: Install Playwright browsers (packaged)
         run: |
-          python -m playwright install chromium
+          # 指定安装目录到 resources/ms-playwright/，随 extraResources 一起打包进 DMG
+          PLAYWRIGHT_BROWSERS_PATH="$PWD/resources/ms-playwright" \
+            python -m playwright install chromium
+          echo "Playwright browser size:"
+          du -sh resources/ms-playwright/
 
       - name: Build (macOS DMG)
         run: npm run build:mac

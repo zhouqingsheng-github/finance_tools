@@ -112,7 +112,7 @@ class LoginEngine:
         """
 
         async with async_playwright() as p:
-            # 优先使用系统 Chrome，失败则用 Chromium
+            # 浏览器启动策略：系统 Chrome 优先，失败则用打包的 Playwright Chromium
             launch_args = [
                 '--disable-blink-features=AutomationControlled',
                 '--disable-dev-shm-usage',
@@ -122,25 +122,37 @@ class LoginEngine:
                 '--disable-site-isolation-trials',
                 '--start-maximized'
             ]
-            try:
-                browser = await p.chromium.launch(
-                    headless=False,
-                    channel='chrome',
-                    args=launch_args
-                )
-                self.emit_event('task:log', {
-                    'merchantId': merchant_id,
-                    'log': {'level': 'info', 'message': '🌐 使用系统 Chrome 浏览器', 'timestamp': time.time()}
-                })
-            except Exception:
-                browser = await p.chromium.launch(
-                    headless=False,
-                    args=launch_args
-                )
-                self.emit_event('task:log', {
-                    'merchantId': merchant_id,
-                    'log': {'level': 'info', 'message': '🌐 使用 Chromium 浏览器', 'timestamp': time.time()}
-                })
+
+            browser = None
+            last_error = None
+
+            for channel in ['chrome', 'chromium']:
+                try:
+                    browser = await p.chromium.launch(
+                        headless=False,
+                        channel=channel,
+                        args=launch_args
+                    )
+                    channel_names = {'chrome': 'Google Chrome', 'chromium': 'Chromium'}
+                    self.emit_event('task:log', {
+                        'merchantId': merchant_id,
+                        'log': {'level': 'info', 'message': f'[浏览器] 使用 {channel_names.get(channel, channel)}', 'timestamp': time.time()}
+                    })
+                    logger.info(f"Browser launched successfully with channel={channel}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    logger.info(f"Browser channel '{channel}' not available: {e}")
+                    continue
+
+            if browser is None:
+                err_msg = str(last_error) if last_error else '未知错误'
+                if "Executable doesn't exist" in err_msg or "doesn't exist" in err_msg:
+                    err_msg = (
+                        '未找到可用浏览器。请确保已安装 Google Chrome。\n'
+                        '下载地址: https://www.google.com/chrome/'
+                    )
+                raise Exception(err_msg)
 
             context = await browser.new_context(
                 no_viewport=True,  # 不限制 viewport，使用实际窗口大小
