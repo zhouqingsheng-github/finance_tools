@@ -888,9 +888,9 @@ class JsonRpcServer:
 
         # 全部完成后的汇总状态
         final_status = 'success' if not error_messages else ('error' if success_count == 0 else 'success')
-        result_summary = f'{success_count}/{total_merchants} 个商家成功'
+        result_summary = f'成功 {success_count} / 共 {total_merchants} 个商家'
         if error_messages:
-            result_summary += f'，{len(error_messages)}个失败'
+            result_summary += f'（{len(error_messages)}个失败）'
 
         self.task_repo.update(task_id, {'status': final_status, 'last_run_at': int(time.time()), 'last_result': result_summary})
         self.emit_event('task:progress', {

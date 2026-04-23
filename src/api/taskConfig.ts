@@ -26,6 +26,10 @@ export const taskConfigApi = {
     return await window.electronAPI.taskConfigExecute(taskId)
   },
 
+  async stopAll(): Promise<void> {
+    await window.electronAPI.taskStopAll()
+  },
+
   async parseCurl(curl: string): Promise<{
     method: string
     url: string

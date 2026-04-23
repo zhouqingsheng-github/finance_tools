@@ -8,7 +8,8 @@ import type { TaskConfig } from '@/types/electron'
 import {
   Plus, Play, Square, FileText, Edit3, Trash2,
   CheckCircle2, XCircle, Loader2, Terminal,
-  Globe, ChevronDown, Settings, RefreshCw, Link
+  Globe, ChevronDown, Settings, RefreshCw, Link,
+  Activity, AlertTriangle, Clock, Zap
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -355,6 +356,63 @@ function getMethodColor(method: string) {
 }
 
 const taskList = computed(() => taskStore.tasks)
+
+// ===== 状态统计 =====
+const runningCount = computed(() => {
+  // 运行中：runStatuses 中 status 为 running 的任务
+  let count = 0
+  taskStore.runStatuses.forEach(s => { if (s.status === 'running') count++ })
+  return count
+})
+
+const failedCount = computed(() => {
+  // 失败：任务配置 status=error 或 runStatuses 中 status=error
+  const fromConfig = taskList.value.filter(t => t.status === 'error').length
+  let fromRuntime = 0
+  taskStore.runStatuses.forEach(s => { if (s.status === 'error') fromRuntime++ })
+  return Math.max(fromConfig, fromRuntime)
+})
+
+const pendingCount = computed(() => {
+  // 待执行：status 为 idle 或 success（非 running/error/disabled）
+  return taskList.value.filter(t =>
+    t.status !== 'running' && t.status !== 'error' && t.status !== 'disabled'
+  ).length
+})
+
+const totalCount = computed(() => taskList.value.length)
+
+const allExecuting = ref(false)
+
+async function handleExecuteAll() {
+  if (allExecuting.value) return
+  const activeTasks = taskList.value.filter(t => t.status !== 'disabled')
+  if (activeTasks.length === 0) return
+
+  allExecuting.value = true
+  try {
+    for (const task of activeTasks) {
+      // 跳过正在运行中的任务
+      const rs = taskStore.runStatuses.get(task.id)
+      if (rs && rs.status === 'running') continue
+
+      await handleExecute(task)
+      // 每个任务之间间隔一小段时间，避免并发过多
+      await new Promise(r => setTimeout(r, 300))
+    }
+  } finally {
+    allExecuting.value = false
+  }
+}
+
+async function handleStopAll() {
+  // 调用后端停止所有任务
+  try {
+    await taskConfigApi.stopAll()
+  } catch (e) {
+    console.error('[TaskCenter] stopAll error:', e)
+  }
+}
 </script>
 
 <template>
@@ -365,12 +423,75 @@ const taskList = computed(() => taskStore.tasks)
         <h1 class="text-xl font-semibold text-dark-100">任务调度中心</h1>
         <p class="text-sm text-dark-400 mt-1">创建采集任务，配置 CURL 命令，自动注入登录凭证</p>
       </div>
-      <button 
-        @click="openCreateForm"
-        class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-white font-medium transition-all shadow-lg shadow-primary/25 active:scale-[0.98] text-sm"
-      >
-        <Plus class="w-4 h-4" /> 新建任务
-      </button>
+      <div class="flex items-center gap-3">
+        <button
+          @click="handleExecuteAll"
+          :disabled="allExecuting || pendingCount === 0"
+          class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed text-sm border border-emerald-500/20"
+        >
+          <Zap v-if="!allExecuting" class="w-4 h-4" />
+          <Loader2 v-else class="w-4 h-4 animate-spin" />
+          全部执行
+        </button>
+        <button
+          @click="handleStopAll"
+          :disabled="runningCount === 0"
+          class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed text-sm border border-rose-500/20"
+        >
+          <Square class="w-3.5 h-3.5 fill-current" />
+          全部停止
+        </button>
+        <button 
+          @click="openCreateForm"
+          class="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-white font-medium transition-all shadow-lg shadow-primary/25 active:scale-[0.98] text-sm"
+        >
+          <Plus class="w-4 h-4" /> 新建任务
+        </button>
+      </div>
+    </div>
+
+    <!-- 状态统计卡片 -->
+    <div v-if="totalCount > 0" class="grid grid-cols-4 gap-4">
+      <!-- 总任务数 -->
+      <div class="glass-card p-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-dark-700/60 flex items-center justify-center">
+          <Terminal class="w-5 h-5 text-dark-400" />
+        </div>
+        <div>
+          <p class="text-2xl font-bold text-dark-100">{{ totalCount }}</p>
+          <p class="text-xs text-dark-500">总任务数</p>
+        </div>
+      </div>
+      <!-- 运行中 -->
+      <div class="glass-card p-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+          <Loader2 :class="['w-5 h-5 text-primary', { 'animate-spin': runningCount > 0 }]" />
+        </div>
+        <div>
+          <p class="text-2xl font-bold text-primary">{{ runningCount }}</p>
+          <p class="text-xs text-dark-500">运行中</p>
+        </div>
+      </div>
+      <!-- 失败 -->
+      <div class="glass-card p-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center">
+          <XCircle class="w-5 h-5 text-rose-400" />
+        </div>
+        <div>
+          <p class="text-2xl font-bold text-rose-400">{{ failedCount }}</p>
+          <p class="text-xs text-dark-500">失败</p>
+        </div>
+      </div>
+      <!-- 待执行 -->
+      <div class="glass-card p-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center">
+          <Clock class="w-5 h-5 text-amber-400" />
+        </div>
+        <div>
+          <p class="text-2xl font-bold text-amber-400">{{ pendingCount }}</p>
+          <p class="text-xs text-dark-500">待执行</p>
+        </div>
+      </div>
     </div>
 
     <!-- 任务列表 -->
