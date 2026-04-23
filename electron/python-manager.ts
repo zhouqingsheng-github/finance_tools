@@ -19,6 +19,17 @@ interface JsonRpcResponse {
   }
 }
 
+export interface PythonManagerOptions {
+  /** Python 可执行文件路径，如 'python3' 或 '/usr/local/bin/python3' */
+  pythonExe: string
+  /** Python 脚本参数列表，第一个元素为脚本路径 */
+  args: string[]
+  /** 是否开启 PYTHON_DEBUG（默认 false），设为 true 时 Python 端会连接 PyCharm 远程调试 */
+  debug?: boolean
+  /** 额外注入的环境变量（可选） */
+  extraEnv?: Record<string, string>
+}
+
 export class PythonProcessManager {
   private process: ChildProcess | null = null
   private requestId = 0
@@ -30,13 +41,15 @@ export class PythonProcessManager {
   private _isRunning = false
   private pythonExe: string
   private args: string[]
+  private options: PythonManagerOptions
   
   // 状态变化回调
   public onStatusChange?: (status: string) => void
 
-  constructor(pythonExe: string, args: string[]) {
-    this.pythonExe = pythonExe
-    this.args = args
+  constructor(options: PythonManagerOptions) {
+    this.pythonExe = options.pythonExe
+    this.args = options.args
+    this.options = { debug: false, ...options }
   }
 
   start(): boolean {
@@ -49,7 +62,10 @@ export class PythonProcessManager {
         cwd: path.dirname(scriptPath),
         env: {
           ...process.env,
-          PYTHONUNBUFFERED: '1'
+          PYTHONUNBUFFERED: '1',
+          // 灵活控制 debug 模式，本地开发时可开启连接 PyCharm 调试
+          ...(this.options.debug ? { PYTHON_DEBUG: '1' } : {}),
+          ...this.options.extraEnv,
         },
         stdio: ['pipe', 'pipe', 'pipe']
       })

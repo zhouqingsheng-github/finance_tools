@@ -61,6 +61,9 @@ class DatabaseManager:
             # ===== 迁移：删除废弃的 task_logs 表（日志改用前端内存存储）=====
             self._drop_task_logs_table(conn)
 
+            # ===== 迁移：为 tasks 表添加 task_type + browser_config 字段（浏览器自动化模式）=====
+            self._migrate_tasks_browser_mode(conn)
+
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
             
@@ -306,6 +309,29 @@ class DatabaseManager:
                 logger.info("Dropped deprecated task_logs table")
         except Exception as e:
             logger.warning(f"Failed to drop task_logs table: {e}")
+
+    def _migrate_tasks_browser_mode(self, conn: sqlite3.Connection):
+        """迁移：为 tasks 表添加 task_type + browser_config 字段（浏览器自动化模式）"""
+        cursor = conn.cursor()
+        try:
+            cursor.execute("PRAGMA table_info(tasks)")
+            columns = [row[1] for row in cursor.fetchall()]
+
+            new_columns = {
+                'task_type': "TEXT DEFAULT 'curl'",
+                'browser_config': "TEXT DEFAULT '{}'",
+            }
+
+            for col_name, col_def in new_columns.items():
+                if col_name not in columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_def}")
+                        logger.info(f"Tasks table: added column {col_name}")
+                    except Exception as e:
+                        logger.warning(f"Tasks migration failed for {col_name}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Browser mode migration failed: {e}")
 
     def get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""

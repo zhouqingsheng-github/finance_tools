@@ -32,8 +32,9 @@ let unsubLog: (() => void) | null = null
 const formData = ref({
   name: '',
   merchant_ids: [] as string[],
+  task_type: 'curl' as 'curl' | 'browser',
   curl_command: '',
-  method: 'GET' as string,
+  method: '' as string,
   url: '',
   headers: {} as Record<string, string>,
   params: {} as Record<string, any>,
@@ -41,9 +42,89 @@ const formData = ref({
   inject_credential: 1,
   field_mapping: {} as Record<string, string>,
   response_extract: { enabled: false, list_path: '', fields: [] as { target: string; source: string }[] } as any,
-  pagination: { enabled: false, page_field: '', size_field: '', default_size: 20, total_field: '', is_total_page: false } as any,
+  pagination: { enabled: false, page_field: '', size_field: '', default_size: 20, total_field: '', is_total_page: false, max_pages: 20 } as any,
+  // 浏览器自动化模式配置
+  browser_config: {
+    target_url: '' as string,
+    api_url: '' as string,
+    wait_after_load: 3000 as number
+  } as any,
   status: 'idle' as TaskConfig['status']
 })
+
+// API 监听器列表（操作+监听一体化单元）
+interface ApiListenerItem {
+  id: string
+  /** 操作：何时触发监听 */
+  action: { type: 'immediate' | 'click'; selector?: string; value?: string }
+  api_url: string
+  mode: 'capture' | 'extract'
+  field_mapping: Record<string, string>
+  response_extract: { enabled: boolean; list_path: string; fields: { target: string; source: string }[] }
+  pagination: { enabled: boolean; page_field: string; size_field: string; total_field: string; is_total_page: boolean }
+}
+
+let listenerIdCounter = 0
+function createListener(mode?: 'capture' | 'extract'): ApiListenerItem {
+  listenerIdCounter++
+  return {
+    id: `l_${listenerIdCounter}_${Date.now()}`,
+    action: { type: 'immediate' },
+    api_url: '',
+    mode: mode || 'extract',
+    field_mapping: {},
+    response_extract: { enabled: true, list_path: 'data.records', fields: [] },
+    pagination: { enabled: false, page_field: 'page', size_field: 'pageSize', total_field: '', is_total_page: false },
+  }
+}
+const apiListenerList = ref<ApiListenerItem[]>([createListener()])
+
+/** 检查是否允许添加监听器（capture 模式最多 1 个） */
+const canAddListener = computed(() => {
+  const hasCapture = apiListenerList.value.some(l => l.mode === 'capture')
+  return !hasCapture || apiListenerList.value.length === 0
+})
+
+/** 监听器的动态参数列表（按监听器索引存储） */
+const listenerMappingLists = ref<Record<string, { key: string; value: string }[]>>({})
+
+function getListenerMappingList(id: string): { key: string; value: string }[] {
+  if (!listenerMappingLists.value[id]) {
+    const listener = apiListenerList.value.find(l => l.id === id)
+    const mappings = listener?.field_mapping ? Object.entries(listener.field_mapping).map(([k, v]) => ({ key: k, value: String(v) })) : []
+    listenerMappingLists.value[id] = mappings
+  }
+  return listenerMappingLists.value[id]
+}
+
+function syncListenerMappingToForm(listenerIdx: number) {
+  const l = apiListenerList.value[listenerIdx]
+  if (!l) return
+  const list = listenerMappingLists.value[l.id] || []
+  const mapping: Record<string, string> = {}
+  for (const m of list) {
+    if (m.key) mapping[m.key] = m.value
+  }
+  l.field_mapping = mapping
+}
+
+function addListenerMapping(listenerIdx: number) {
+  const l = apiListenerList.value[listenerIdx]
+  if (!l) return
+  const list = getListenerMappingList(l.id)
+  list.push({ key: '', value: '' })
+}
+
+function removeListenerMapping(listenerIdx: number, mapIdx: number) {
+  const l = apiListenerList.value[listenerIdx]
+  if (!l) return
+  const list = getListenerMappingList(l.id)
+  list.splice(mapIdx, 1)
+  syncListenerMappingToForm(listenerIdx)
+}
+
+// 浏览器模式操作步骤列表（已合并到每个监听器的 action 中，保留兼容旧数据加载）
+const _legacyActionList = ref<{ type: string; selector: string; value: string }[]>([])
 
 // 参数编辑列表（支持动态增删）
 const paramList = ref<{ key: string; value: string }[]>([])
@@ -121,8 +202,9 @@ function openCreateForm() {
   formData.value = {
     name: '',
     merchant_ids: (route.query.merchantId as string) ? [route.query.merchantId as string] : [],
+    task_type: 'curl',
     curl_command: '',
-    method: 'GET',
+    method: '',
     url: '',
     headers: {},
     params: {},
@@ -131,12 +213,16 @@ function openCreateForm() {
     field_mapping: {},
     response_extract: { enabled: false, list_path: '', fields: [] },
     pagination: { enabled: false, page_field: '', size_field: '', default_size: 20, total_field: '', is_total_page: false },
+    browser_config: { target_url: '', api_url: '', wait_after_load: 3000 },
     status: 'idle'
   }
   paramList.value = []
   headerList.value = []
   mappingList.value = []
   extractFieldList.value = []
+  listenerIdCounter = 0
+  apiListenerList.value = [createListener()]
+  listenerMappingLists.value = {}
   showMerchantDropdown.value = false
   showForm.value = true
 }
@@ -145,11 +231,13 @@ function openEditForm(task: TaskConfig) {
   editingTask.value = task
   showCurlInput.value = false
   curlInput.value = task.curl_command || ''
+  const bc = (task as any).browser_config || {}
   formData.value = {
     name: task.name,
     merchant_ids: task.merchant_ids || (task.merchant_id ? [task.merchant_id] : []),
+    task_type: (task as any).task_type || 'curl',
     curl_command: task.curl_command || '',
-    method: task.method || 'GET',
+    method: task.method || '',
     url: task.url || '',
     headers: task.headers && typeof task.headers === 'object' ? { ...task.headers } : {},
     params: task.params && typeof task.params === 'object' ? { ...task.params } : {},
@@ -158,6 +246,11 @@ function openEditForm(task: TaskConfig) {
     field_mapping: task.field_mapping && typeof task.field_mapping === 'object' ? { ...task.field_mapping } : {},
     response_extract: (task as any).response_extract || { enabled: false, list_path: '', fields: [] },
     pagination: (task as any).pagination || { enabled: false, page_field: '', size_field: '', default_size: 20, total_field: '', is_total_page: false },
+    browser_config: {
+      target_url: bc.target_url || '',
+      api_url: bc.api_url || '',
+      wait_after_load: bc.wait_after_load || 3000
+    },
     status: task.status
   }
   // 同步到编辑列表
@@ -169,6 +262,45 @@ function openEditForm(task: TaskConfig) {
   extractFieldList.value = Array.isArray(extractConfig?.fields)
     ? [...(extractConfig.fields as any[])]
     : []
+  _legacyActionList.value = Array.isArray(bc?.actions) ? [...bc.actions] : []
+
+  // 加载 API 监听器列表（新版 api_listeners / 旧版兼容）
+  const listeners = (bc as any).api_listeners
+  listenerMappingLists.value = {}
+  if (Array.isArray(listeners) && listeners.length > 0) {
+    apiListenerList.value = listeners.map((l: any) => {
+      const id = l.id || `l_${++listenerIdCounter}_${Date.now()}`
+      // 预加载动态参数映射列表
+      const fm = l.field_mapping || {}
+      if (Object.keys(fm).length > 0) {
+        listenerMappingLists.value[id] = Object.entries(fm).map(([k, v]) => ({ key: k, value: String(v) }))
+      }
+      // 兼容：旧版数据没有 action 字段，默认 immediate
+      const action = l.action || { type: 'immediate' as const }
+      return {
+        id,
+        action,
+        api_url: l.api_url || '',
+        mode: l.mode || 'extract',
+        field_mapping: fm,
+        response_extract: l.response_extract || { enabled: true, list_path: 'data.records', fields: [] },
+        pagination: l.pagination || { enabled: false, page_field: 'page', size_field: 'pageSize', total_field: '', is_total_page: false },
+      }
+    })
+  } else if (bc.api_url) {
+    // 兼容旧版单一 api_url → 默认 extract + immediate 模式
+    apiListenerList.value = [{
+      id: `l_${++listenerIdCounter}_${Date.now()}`,
+      action: { type: 'immediate' as const },
+      api_url: bc.api_url,
+      mode: 'extract',
+      field_mapping: {},
+      response_extract: { enabled: true, list_path: 'data.records', fields: [] },
+      pagination: { enabled: false, page_field: 'page', size_field: 'pageSize', total_field: '', is_total_page: false },
+    }]
+  } else {
+    apiListenerList.value = [createListener('extract')]
+  }
   showMerchantDropdown.value = false
   showForm.value = true
 }
@@ -179,7 +311,7 @@ async function handleParseCurl() {
   try {
     const result = await taskStore.parseCurl(curlInput.value)
     formData.value.curl_command = curlInput.value
-    formData.value.method = result.method || 'GET'
+    formData.value.method = result.method || ''
     formData.value.url = result.url || ''
     formData.value.headers = result.headers || {}
     formData.value.params = result.params || {}
@@ -274,13 +406,69 @@ function removeExtractField(index: number) {
   syncExtractFieldsToForm()
 }
 
+/** 监听器的操作类型变更 */
+function onListenerActionTypeChange(lIdx: number) {
+  const l = apiListenerList.value[lIdx]
+  if (!l) return
+  if (l.action.type === 'immediate') {
+    l.action.selector = ''
+    l.action.value = ''
+  }
+}
+
+/** 监听器操作：点击后延迟时间（可选） */
+function onListenerActionDelayChange(lIdx: number) {
+  // value 可用于 immediate 模式的延迟等待（ms）
+}
+
+// API 监听器管理
+function addApiListener() {
+  if (!canAddListener.value) {
+    // capture 模式已有，只能添加 extract
+    apiListenerList.value.push(createListener('extract'))
+    return
+  }
+  apiListenerList.value.push(createListener())
+}
+
+function removeApiListener(index: number) {
+  if (apiListenerList.value.length > 1) {
+    const removed = apiListenerList.value.splice(index, 1)[0]
+    if (removed && listenerMappingLists.value[removed.id]) {
+      delete listenerMappingLists.value[removed.id]
+    }
+  }
+}
+
+/** 切换模式时：capture 只能有 1 个 */
+function onListenerModeChange(lIdx: number) {
+  const l = apiListenerList.value[lIdx]
+  if (!l) return
+  // 如果切到 capture 且已有其他 capture，则将其他改为 extract
+  if (l.mode === 'capture') {
+    for (let i = 0; i < apiListenerList.value.length; i++) {
+      if (i !== lIdx && apiListenerList.value[i].mode === 'capture') {
+        apiListenerList.value[i].mode = 'extract'
+      }
+    }
+  }
+}
+
+function addListenerExtractField(listenerIdx: number) {
+  apiListenerList.value[listenerIdx].response_extract.fields.push({ target: '', source: '' })
+}
+
+function removeListenerExtractField(listenerIdx: number, fieldIdx: number) {
+  apiListenerList.value[listenerIdx].response_extract.fields.splice(fieldIdx, 1)
+}
+
 async function handleSave() {
   // 如果 CURL 输入模式有内容，自动重新解析，确保 params/body 与 curlInput 同步
   if (showCurlInput.value && curlInput.value.trim()) {
     try {
       const result = await taskStore.parseCurl(curlInput.value)
       formData.value.curl_command = curlInput.value
-      formData.value.method = result.method || 'GET'
+      formData.value.method = result.method || ''
       formData.value.url = result.url || ''
       formData.value.headers = result.headers || {}
       formData.value.params = result.params || {}
@@ -296,6 +484,34 @@ async function handleSave() {
     syncHeaderListToForm()
     syncMappingListToForm()
     syncExtractFieldsToForm()
+  }
+
+  // 浏览器模式：同步监听器（含内嵌 action）到 browser_config
+  if (formData.value.task_type === 'browser') {
+    const bc: any = {
+      target_url: formData.value.browser_config?.target_url || '',
+      wait_after_load: formData.value.browser_config?.wait_after_load || 3000
+    }
+    // 将 apiListenerList 序列化为 api_listeners（保存前同步动态参数）
+    for (let i = 0; i < apiListenerList.value.length; i++) {
+      syncListenerMappingToForm(i)
+    }
+    const validListeners = apiListenerList.value.filter(l => l.api_url.trim())
+    if (validListeners.length > 0) {
+      bc.api_listeners = validListeners.map(l => ({
+        action: l.action,
+        api_url: l.api_url,
+        mode: l.mode,
+        field_mapping: l.field_mapping || {},
+        response_extract: l.response_extract,
+        pagination: l.pagination,
+      }))
+    }
+    // 兼容旧版：如果只有一个 capture 模式监听器，同时写入 api_url
+    if (validListeners.length === 1 && validListeners[0].mode === 'capture') {
+      bc.api_url = validListeners[0].api_url
+    }
+    formData.value.browser_config = bc
   }
 
   if (editingTask.value) {
@@ -506,11 +722,11 @@ async function handleStopAll() {
             <!-- 左侧信息 -->
             <div class="flex items-start gap-4 flex-1 min-w-0">
               <!-- 方法标签 -->
-              <div 
+              <div
                 class="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 text-xs font-bold"
                 :class="getMethodColor(task.method)"
               >
-                {{ (task.method || 'GET').toUpperCase() }}
+                {{ (task.method || '自动化').toUpperCase() }}
               </div>
 
               <div class="min-w-0 flex-1">
@@ -614,6 +830,30 @@ async function handleStopAll() {
             </h2>
 
             <form @submit.prevent="handleSave" class="space-y-5">
+              <!-- 任务类型切换 -->
+              <div class="flex items-center gap-2 p-3 bg-dark-800/40 rounded-lg border border-dark-700/30">
+                <span class="text-sm text-dark-400 font-medium">任务类型：</span>
+                <button
+                  type="button"
+                  @click="formData.task_type = 'curl'; showCurlInput = true"
+                  class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  :class="formData.task_type === 'curl' ? 'bg-primary text-white' : 'bg-dark-700/50 text-dark-400 hover:text-dark-200'"
+                >
+                  <Terminal class="w-3.5 h-3.5 inline mr-1" /> HTTP 请求 (CURL)
+                </button>
+                <button
+                  type="button"
+                  @click="formData.task_type = 'browser'; showCurlInput = false"
+                  class="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
+                  :class="formData.task_type === 'browser' ? 'bg-primary text-white' : 'bg-dark-700/50 text-dark-400 hover:text-dark-200'"
+                >
+                  <Globe class="w-3.5 h-3.5 inline mr-1" /> 浏览器自动化
+                </button>
+                <span v-if="formData.task_type === 'browser'" class="text-[10px] text-primary ml-auto">
+                  通过已登录的浏览器操作页面，适合有安全机制的平台
+                </span>
+              </div>
+
               <!-- 基本信息 -->
               <div class="grid grid-cols-2 gap-4">
                 <div>
@@ -667,8 +907,8 @@ async function handleStopAll() {
                 </div>
               </div>
 
-              <!-- CURL 输入区 -->
-              <div class="border border-dark-700/50 rounded-xl overflow-hidden">
+              <!-- CURL 输入区（HTTP 请求模式） -->
+              <div v-if="formData.task_type === 'curl'" class="border border-dark-700/50 rounded-xl overflow-hidden">
                 <div class="flex items-center justify-between px-4 py-2.5 bg-dark-800/40 border-b border-dark-700/30">
                   <div class="flex items-center gap-2">
                     <Terminal class="w-4 h-4 text-primary" />
@@ -915,6 +1155,195 @@ async function handleStopAll() {
                 </div>
               </div>
 
+              <!-- 浏览器自动化模式配置 -->
+              <div v-else class="border border-dark-700/50 rounded-xl overflow-hidden p-4 space-y-4">
+                <div class="flex items-center justify-between px-4 py-2.5 bg-dark-800/40 border-b border-dark-700/30">
+                  <div class="flex items-center gap-2">
+                    <Globe class="w-4 h-4 text-primary" />
+                    <span class="text-sm font-medium text-dark-300">浏览器自动化配置</span>
+                  </div>
+                  <span class="text-[10px] text-dark-600">操作步骤触发请求 → 监听器拦截</span>
+                </div>
+
+                <!-- 目标页面 URL -->
+                <div>
+                  <label class="block text-xs font-medium text-dark-400 mb-1.5">
+                    目标页面 URL *
+                    <span class="text-[10px] text-dark-600 ml-1">（已登录后要访问的数据页面）</span>
+                  </label>
+                  <input
+                    v-model="formData.browser_config.target_url"
+                    type="url"
+                    placeholder="https://xxx.com/data-list"
+                    class="input-field font-mono"
+                  />
+                </div>
+
+                <!-- 操作+监听一体化列表 -->
+                <div>
+                  <div class="flex items-center justify-between mb-2">
+                    <label class="text-xs font-medium text-dark-400 flex items-center gap-1.5">
+                      操作 & 监听
+                      <span :class="['text-[10px] px-1.5 py-0.5 rounded', apiListenerList.length > 0 ? 'bg-primary/10 text-primary' : 'bg-dark-700/50 text-dark-500']">{{ apiListenerList.length }}</span>
+                    </label>
+                    <button type="button" @click="addApiListener"
+                            :disabled="!canAddListener"
+                            class="flex items-center gap-1 text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            :class="canAddListener ? 'text-primary hover:text-primary/80' : 'text-dark-600'">
+                      <Plus class="w-3 h-3" /> 添加
+                    </button>
+                  </div>
+                  <p class="text-[10px] text-dark-600 mb-2">
+                    每个单元包含一个操作 + 一个监听器。<span class="text-amber-400">抓包(CURL)模式最多 1 个</span>
+                  </p>
+
+                  <!-- 监听器卡片列表 -->
+                  <div class="space-y-3">
+                    <div v-for="(listener, lIdx) in apiListenerList" :key="listener.id"
+                         class="border border-dark-700/50 rounded-lg overflow-hidden">
+                      <!-- 卡片头部：操作类型 + URL + 模式 -->
+                      <div class="flex flex-col sm:flex-row items-start sm:items-center gap-1.5 p-2.5 bg-dark-800/30">
+                        <span class="text-[10px] font-bold text-dark-500 w-6 shrink-0">#{{ lIdx + 1 }}</span>
+                        <!-- 操作类型选择 -->
+                        <select v-model="listener.action.type" class="param-input w-[100px] cursor-pointer text-xs font-medium shrink-0"
+                                @change="onListenerActionTypeChange(lIdx)">
+                          <option value="immediate">⚡ 立即</option>
+                          <option value="click">🖱️ 点击</option>
+                        </select>
+                        <!-- click 模式：显示选择器输入 -->
+                        <input v-if="listener.action.type === 'click'" v-model="listener.action.selector"
+                               placeholder="点击选择器（如 .btn-query）"
+                               class="param-input flex-1 font-mono text-xs min-w-0" />
+                        <span v-if="listener.action.type === 'click'" class="text-[9px] text-dark-600 shrink-0 hidden sm:inline">
+                          → 点击后监听
+                        </span>
+                        <!-- URL 输入（换行显示） -->
+                        <input v-model="listener.api_url" placeholder="匹配接口 URL 关键字"
+                               class="param-input flex-1 font-mono text-xs min-w-0 sm:w-full sm:mt-1 sm:sm:mt-0" />
+                        <!-- 模式选择 -->
+                        <select v-model="listener.mode" class="param-input w-[105px] cursor-pointer text-xs font-medium shrink-0"
+                                @change="onListenerModeChange(lIdx)">
+                          <option value="capture" :disabled="apiListenerList.some((l, i) => i !== lIdx && l.mode === 'capture')">
+                            📋 抓包 CURL
+                          </option>
+                          <option value="extract">📊 提取数据</option>
+                        </select>
+                        <button v-if="apiListenerList.length > 1" type="button" @click="removeApiListener(lIdx)"
+                                class="p-1 rounded text-dark-600 hover:text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0">
+                          <Trash2 class="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      <!-- ===== 配置项 ===== -->
+                      <div class="p-3 space-y-3 bg-dark-900/20">
+
+                        <!-- 动态参数映射 -->
+                        <div>
+                          <div class="flex items-center gap-2 mb-1.5">
+                            <label class="text-[11px] font-medium text-dark-400">动态参数</label>
+                            <button type="button" @click="addListenerMapping(lIdx)" class="text-[10px] text-primary hover:text-primary/80">+ 添加</button>
+                          </div>
+                          <div v-if="(getListenerMappingList(listener.id)||[]).length > 0" class="space-y-1">
+                            <div v-for="(m, mIdx) in getListenerMappingList(listener.id)" :key="mIdx"
+                                 class="flex items-center gap-1.5">
+                              <input v-model="m.key" placeholder="参数名" class="param-input w-32 text-xs" @input="syncListenerMappingToForm(lIdx)" />
+                              <span class="text-dark-500 text-[11px]">→</span>
+                              <input v-model="m.value" placeholder="值" class="param-input flex-1 font-mono text-xs" @input="syncListenerMappingToForm(lIdx)" />
+                              <button type="button" @click="removeListenerMapping(lIdx, mIdx)"
+                                      class="p-0.5 text-dark-600 hover:text-rose-400"><Trash2 class="w-3 h-3" /></button>
+                            </div>
+                          </div>
+                          <div v-else class="py-1.5 px-3 border border-dashed border-dark-700/30 rounded text-center">
+                            <p class="text-[9px] text-dark-600">执行时替换请求中的同名参数值</p>
+                            <button type="button" @click="addListenerMapping(lIdx)" class="text-[10px] text-primary hover:text-primary/80 mt-1">+ 第一个参数</button>
+                          </div>
+                        </div>
+
+                        <!-- 响应数据提取 -->
+                        <div>
+                          <div class="flex items-center gap-2 mb-1.5">
+                            <label class="text-[11px] font-medium text-dark-400 flex items-center gap-1">
+                              响应数据提取
+                              <input type="checkbox" v-model="listener.response_extract.enabled"
+                                     class="rounded border-dark-600 text-emerald-500 focus:ring-emerald-500/50 w-3.5 h-3.5" />
+                            </label>
+                            <span class="text-[10px]" :class="listener.response_extract.enabled ? 'text-emerald-400' : 'text-dark-500'">
+                              {{ listener.response_extract.enabled ? 'ON' : 'OFF' }}
+                            </span>
+                          </div>
+                          <div v-if="listener.response_extract?.enabled" class="space-y-2 pl-3 border-l-2 border-emerald-500/15">
+                            <input v-model="listener.response_extract.list_path"
+                                   placeholder='数据列表路径（如 data.records）'
+                                   class="input-field text-xs font-mono" />
+                            <div v-if="listener.response_extract.fields.length > 0" class="space-y-1">
+                              <div v-for="(f, fIdx) in listener.response_extract.fields" :key="fIdx"
+                                   class="flex items-center gap-1.5">
+                                <input v-model="f.target" placeholder="目标字段名" class="param-input w-24 text-xs" />
+                                <span class="text-dark-500 text-[11px]">&lt;-</span>
+                                <input v-model="f.source" placeholder="源路径" class="param-input flex-1 font-mono text-xs" />
+                                <button type="button" @click="removeListenerExtractField(lIdx, fIdx)"
+                                        class="p-0.5 text-dark-600 hover:text-rose-400"><Trash2 class="w-3 h-3" /></button>
+                              </div>
+                            </div>
+                            <button type="button" @click="addListenerExtractField(lIdx)"
+                                    class="text-[11px] text-primary hover:text-primary/80">
+                              + 字段
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- 分页循环配置（去掉 max_pages / default_size） -->
+                        <div>
+                          <div class="flex items-center gap-2 mb-1.5">
+                            <label class="text-[11px] font-medium text-dark-400 flex items-center gap-1">
+                              自动分页循环
+                              <input type="checkbox" v-model="listener.pagination.enabled"
+                                     class="rounded border-dark-600 text-cyan-500 focus:ring-cyan-500/50 w-3.5 h-3.5" />
+                            </label>
+                            <span class="text-[10px]" :class="listener.pagination.enabled ? 'text-cyan-400' : 'text-dark-500'">
+                              {{ listener.pagination.enabled ? 'ON' : 'OFF' }}
+                            </span>
+                            <span class="text-[9px] text-dark-600 ml-auto">
+                              {{ listener.mode === 'extract' ? '分页参数请求' : 'DOM翻页按钮' }}
+                            </span>
+                          </div>
+                          <div v-if="listener.pagination?.enabled" class="pl-3 border-l-2 border-cyan-500/15 space-y-2">
+                            <div class="grid grid-cols-3 gap-2">
+                              <div>
+                                <label class="block [font-size:9px] text-dark-500 mb-0.5">页码参数</label>
+                                <input v-model="listener.pagination.page_field" placeholder="page" class="input-field text-xs font-mono" />
+                              </div>
+                              <div>
+                                <label class="block [font-size:9px] text-dark-500 mb-0.5">每页数参数</label>
+                                <input v-model="listener.pagination.size_field" placeholder="pageSize" class="input-field text-xs font-mono" />
+                              </div>
+                              <div>
+                                <label class="block [font-size:9px] text-dark-500 mb-0.5">总数路径</label>
+                                <input v-model="listener.pagination.total_field" placeholder='data.total' class="input-field text-xs font-mono" />
+                              </div>
+                            </div>
+                            <label class="flex items-center gap-1.5 text-[10px] text-dark-400 cursor-pointer">
+                              <input type="checkbox" v-model="listener.pagination.is_total_page"
+                                     class="rounded border-dark-600 w-3 h-3" />
+                              <span>返回的是<strong class="text-dark-300 mx-0.5">总页数</strong></span>
+                            </label>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 加载等待时间 -->
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs font-medium text-dark-400 mb-1.5">页面加载后等待 (ms)</label>
+                    <input v-model.number="formData.browser_config.wait_after_load" type="number" min="0" max="10000" step="500" class="input-field" placeholder="3000" />
+                  </div>
+                </div>
+              </div>
+
               <!-- 高级选项 -->
               <div class="grid grid-cols-2 gap-4">
                 <div>
@@ -942,9 +1371,9 @@ async function handleStopAll() {
                 >
                   取消
                 </button>
-                <button 
+                <button
                   type="submit"
-                  :disabled="!formData.name || !formData.merchant_ids.length || !formData.url"
+                  :disabled="!formData.name || !formData.merchant_ids.length || (formData.task_type === 'curl' ? !formData.url : !formData.browser_config?.target_url)"
                   class="px-5 py-2 rounded-lg bg-primary hover:bg-primary/90 text-white text-sm font-medium transition-all shadow-lg shadow-primary/25 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]"
                 >
                   {{ editingTask ? '保存修改' : '创建任务' }}

@@ -347,7 +347,22 @@ app.whenReady().then(() => {
   }
   console.log('[Main] PYTHONPATH:', process.env.PYTHONPATH)
 
-  pythonManager = new PythonProcessManager(pythonExe, [pythonScript])
+  // Python 解释器配置：
+  //   - 环境变量 PYTHON_EXE 优先级最高
+  //   - dev 模式默认使用 conda 环境（finance_tools）
+  //   - 打包后使用系统检测的 pythonExe
+  const DEV_PYTHON_EXE = '/opt/anaconda3/envs/finance_tools/bin/python'
+  const resolvedPythonExe = process.env.PYTHON_EXE || (!app.isPackaged ? DEV_PYTHON_EXE : pythonExe)
+  const isDebug = process.env.PYTHON_DEBUG === '1'
+  if (isDebug || resolvedPythonExe !== pythonExe) {
+    console.log(`[Main] Debug: ${isDebug}, Python exe: ${resolvedPythonExe}`)
+  }
+
+  pythonManager = new PythonProcessManager({
+    pythonExe: resolvedPythonExe,
+    args: [pythonScript],
+    debug: isDebug,
+  })
 
   // 监听 Python 进程状态变化
   pythonManager.onStatusChange = (status: string) => {

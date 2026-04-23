@@ -379,6 +379,7 @@ class TaskRepository:
                 t['field_mapping'] = json.loads(t.get('field_mapping', '{}'))
                 t['response_extract'] = json.loads(t.get('response_extract', '{}'))
                 t['pagination'] = json.loads(t.get('pagination', '{}'))
+                t['browser_config'] = json.loads(t.get('browser_config', '{}'))
                 raw_ids = t.get('merchant_ids', '[]')
                 if isinstance(raw_ids, str):
                     mids = json.loads(raw_ids)
@@ -437,8 +438,9 @@ class TaskRepository:
                     method, url, headers, params, body,
                     inject_credential, field_mapping,
                     response_extract, pagination,
-                    cron_expression, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cron_expression, task_type, browser_config,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task_id,
                 data.get('name', ''),
@@ -454,6 +456,8 @@ class TaskRepository:
                 json.dumps(data.get('response_extract', {}), ensure_ascii=False),
                 json.dumps(data.get('pagination', {}), ensure_ascii=False),
                 data.get('cron_expression', ''),
+                data.get('task_type', 'curl'),
+                json.dumps(data.get('browser_config', {}), ensure_ascii=False),
                 data.get('status', 'idle'),
                 now, now
             ))
@@ -476,12 +480,13 @@ class TaskRepository:
             'method', 'url', 'headers', 'params', 'body',
             'inject_credential', 'field_mapping',
             'response_extract', 'pagination',
-            'cron_expression', 'status', 'last_run_at', 'last_result'
+            'cron_expression', 'status', 'last_run_at', 'last_result',
+            'task_type', 'browser_config'
         ]
 
         for field in allowed_fields:
             if field in data:
-                if field in ('headers', 'params', 'field_mapping', 'response_extract', 'pagination', 'merchant_ids'):
+                if field in ('headers', 'params', 'field_mapping', 'response_extract', 'pagination', 'merchant_ids', 'browser_config'):
                     update_fields.append(f"{field} = ?")
                     values.append(json.dumps(data[field], ensure_ascii=False))
                 else:

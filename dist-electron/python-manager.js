@@ -7,14 +7,15 @@ exports.PythonProcessManager = void 0;
 const child_process_1 = require("child_process");
 const path_1 = __importDefault(require("path"));
 class PythonProcessManager {
-    constructor(pythonExe, args) {
+    constructor(options) {
         this.process = null;
         this.requestId = 0;
         this.pendingCallbacks = new Map();
         this.buffer = '';
         this._isRunning = false;
-        this.pythonExe = pythonExe;
-        this.args = args;
+        this.pythonExe = options.pythonExe;
+        this.args = options.args;
+        this.options = { debug: false, ...options };
     }
     start() {
         if (this._isRunning)
@@ -25,7 +26,10 @@ class PythonProcessManager {
                 cwd: path_1.default.dirname(scriptPath),
                 env: {
                     ...process.env,
-                    PYTHONUNBUFFERED: '1'
+                    PYTHONUNBUFFERED: '1',
+                    // 灵活控制 debug 模式，本地开发时可开启连接 PyCharm 调试
+                    ...(this.options.debug ? { PYTHON_DEBUG: '1' } : {}),
+                    ...this.options.extraEnv,
                 },
                 stdio: ['pipe', 'pipe', 'pipe']
             });

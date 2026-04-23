@@ -5,8 +5,8 @@ JSON-RPC 消息循环，处理来自 Electron 主进程的请求
 """
 
 import sys
-import os
 import json
+import os
 import time
 import traceback
 import threading
@@ -16,6 +16,9 @@ from typing import Any, Callable, Optional
 
 # 将 python 目录加入 sys.path，确保模块可以正常导入
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import pydevd_pycharm
+pydevd_pycharm.settrace('192.168.140.159', port=5678, stdout_to_server=True, stderr_to_server=True)
 
 # 配置日志
 logging.basicConfig(
@@ -50,6 +53,7 @@ class JsonRpcServer:
         from engine.credential_manager import CredentialManager
         from engine.data_collector import DataCollector
         from engine.curl_parser import CurlParser
+        from engine.browser_automation import BrowserAutomationEngine
         from db.repositories import MerchantRepository, DataRepository, TaskRepository
         
         # 初始化组件
@@ -70,6 +74,11 @@ class JsonRpcServer:
         self.curl_parser = CurlParser()
         self.data_collector = DataCollector(self.credential_mgr, self.data_repo)
         self.login_engine = LoginEngine(
+            self.merchant_repo,
+            self.credential_mgr,
+            event_callback=self.emit_event
+        )
+        self.browser_engine = BrowserAutomationEngine(
             self.merchant_repo,
             self.credential_mgr,
             event_callback=self.emit_event
@@ -879,6 +888,7 @@ class JsonRpcServer:
                 err_msg = f'❌ [{merchant_name or merchant_id}] 执行失败: {e}'
                 error_messages.append(err_msg)
                 logger.error(f"[Task {task_id}] 商家 {merchant_id} 失败: {e}")
+                logger.error(f"[Task {task_id}] 堆栈信息:\n{traceback.format_exc()}")
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id, 'status': 'error',
                     'message': err_msg
@@ -902,7 +912,19 @@ class JsonRpcServer:
         """为单个商家执行一次采集（返回采集到的数据条数）"""
         try:
             task_name = task.get('name', '')
+            task_type = task.get('task_type', 'curl')
 
+            # ===== 分支：浏览器自动化模式 =====
+            if task_type == 'browser':
+                logger.info(f"[Task {task_id}] 浏览器自动化模式执行: {task_name}")
+                self.emit_event('task:progress', {
+                    'taskId': task_id, 'merchantId': merchant_id, 'status': 'running',
+                    'progress': 10, 'message': '🌐 启动浏览器自动化...'
+                })
+                # 浏览器模式内部会自行处理凭证恢复、页面操作、数据提取
+                return await self.browser_engine.execute(task_id, task, merchant_id)
+
+            # ===== 原有 CURL/HTTP 模式 =====
             # 1. 确保登录凭证有效
             cookie_header = ''
             if task.get('inject_credential', 1):
