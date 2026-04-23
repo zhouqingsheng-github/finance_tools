@@ -342,6 +342,13 @@ class LoginEngine:
                                 logger.info(f"检测到 iframe 跳转: {frame_url}")
                                 break
 
+                    # 【关键】检查页面是否仍有验证码元素（滑块/图形验证等）
+                    # 如果有验证码存在，即使 URL 变了也不能算登录成功（美团滑块场景）
+                    has_captcha = await self._has_captcha_elements(page)
+                    if has_captcha:
+                        is_success = False
+                        logger.info(f"检测到验证码元素仍可见，继续等待... (已等待 {waited}s)")
+
                     # 也检查页面内容是否有登录错误提示
                     content = await page.content()
                     has_error = any(err in content.lower() for err in
@@ -355,7 +362,8 @@ class LoginEngine:
                         })
                         continue
 
-                    if is_success and waited > 5:  # 至少等 5 秒避免误判
+                    # 登录成功判断：URL 不在登录页 + 无验证码 + 至少等待 5 秒避免误判
+                    if is_success and not has_captcha and waited > 5:
                         logger.info(f"检测到登录成功! URL: {current_url} (等待 {waited}s)")
 
                         # 提取完整凭证（cookies + localStorage）
@@ -948,3 +956,64 @@ class LoginEngine:
 
         except Exception as e:
             logger.warning(f"恢复 localStorage 失败: {e}")
+
+    async def _has_captcha_elements(self, page) -> bool:
+        """
+        检测页面上是否仍有验证码元素（可见状态）
+        
+        覆盖场景：
+        - 美团滑块验证（拖拽过程中 URL 可能变化）
+        - 图形验证码、短信验证码输入框
+        - 各种第三方验证组件（极验/腾讯/网易等）
+
+        Returns:
+            True = 页面上有可见的验证码元素，不应判定为登录成功
+        """
+        try:
+            # 常见验证码选择器（覆盖主流平台）
+            captcha_selectors = [
+                # 滑块相关（美团/极验等）
+                '.geetest_slider', '.slide-btn', '#nc_1__scale_text',
+                '[class*="slider"]', '[class*="drag"]', '[id*="captcha"]',
+                '[class*="captcha"]', '[id*="verify"]', '[class*="verify"]',
+                # 图片验证码
+                'img[src*="captcha"]', 'img[src*="verify"]', 'img[src*="code"]',
+                '[class*="img-code"]', '[class*="pic-code"]', '#captcha-img',
+                # 验证码输入框
+                'input[placeholder*="验证码"]', 'input[placeholder*="验证"]',
+                'input[name*="captcha"]', 'input[name*="code"]',
+                'input[id*="captcha"]', 'input[id*="sms-code"]',
+                # 短信验证
+                '[class*="sms"]', '[id*="sms-code"]',
+                'button[class*="send-code"]', 'button:has-text("发送验证")',
+                'button:has-text("获取验证码")',
+                # 通用验证容器
+                '[class*="verify-wrap"]', '[class*="auth-code"]',
+                '[class*="security"]', '[role="dialog"]:has(img)',
+                # 美团特有
+                '[class*="mt-captcha"]', '#yodaBox',
+            ]
+
+            for selector in captcha_selectors:
+                try:
+                    element = page.locator(selector).first
+                    if await element.count() > 0 and await element.is_visible():
+                        logger.info(f"检测到验证码元素: {selector}")
+                        return True
+                except Exception:
+                    continue
+
+            # 额外：通过文本内容检测验证码弹窗/提示
+            body_text = await page.evaluate('document.body?.innerText || ""')
+            captcha_keywords = ['请完成验证', '滑动验证', '拖动滑块', '图形验证码',
+                                '请输入验证码', '短信验证', '安全验证', '人机验证']
+            for keyword in captcha_keywords:
+                if keyword in body_text:
+                    logger.info(f"检测到验证码关键词: '{keyword}'")
+                    return True
+
+            return False
+
+        except Exception as e:
+            logger.warning(f"验证码检测异常: {e}，保守认为无验证码")
+            return False
