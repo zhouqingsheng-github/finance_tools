@@ -33,6 +33,8 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     dataDelete: (id) => electron_1.ipcRenderer.invoke('data:delete', id),
     showSaveDialog: (options) => electron_1.ipcRenderer.invoke('dialog:save', options),
     copyFile: (srcPath, destPath) => electron_1.ipcRenderer.invoke('file:copy', srcPath, destPath),
+    // 仪表盘
+    dashboardSummary: () => electron_1.ipcRenderer.invoke('dashboard:summary'),
     // 事件监听
     onPythonEvent: (callback) => {
         electron_1.ipcRenderer.on('python-event', (_event, data) => callback(data.event, data.data));

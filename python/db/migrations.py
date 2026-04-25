@@ -81,6 +81,26 @@ def get_init_sql() -> str:
         updated_at      INTEGER NOT NULL,
         is_deleted      INTEGER DEFAULT 0
     );
+
+    -- 任务运行流水表（每个任务 × 每个商家一次执行一条）
+    CREATE TABLE IF NOT EXISTS task_runs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id         TEXT NOT NULL DEFAULT '',
+        task_name       TEXT NOT NULL DEFAULT '',
+        merchant_id     TEXT NOT NULL DEFAULT '',
+        merchant_name   TEXT NOT NULL DEFAULT '',
+        status          TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'success', 'error')),
+        collected_count INTEGER NOT NULL DEFAULT 0,
+        message         TEXT NOT NULL DEFAULT '',
+        started_at      INTEGER NOT NULL,
+        finished_at     INTEGER NOT NULL DEFAULT 0,
+        duration_ms     INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
+    CREATE INDEX IF NOT EXISTS idx_task_runs_merchant ON task_runs(merchant_id);
     """
 
 
@@ -125,5 +145,28 @@ def run_migrations(conn):
             print("[Migration] Added column collected_data.task_id")
         except Exception as e:
             print(f"[Migration] Skip collected_data.task_id: {e}")
+
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_runs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id         TEXT NOT NULL DEFAULT '',
+                task_name       TEXT NOT NULL DEFAULT '',
+                merchant_id     TEXT NOT NULL DEFAULT '',
+                merchant_name   TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'success', 'error')),
+                collected_count INTEGER NOT NULL DEFAULT 0,
+                message         TEXT NOT NULL DEFAULT '',
+                started_at      INTEGER NOT NULL,
+                finished_at     INTEGER NOT NULL DEFAULT 0,
+                duration_ms     INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_merchant ON task_runs(merchant_id)")
+    except Exception as e:
+        print(f"[Migration] Skip task_runs: {e}")
 
     conn.commit()

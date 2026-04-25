@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, screen } from 'electron'
 import { join, dirname } from 'path'
 import { createWriteStream, existsSync } from 'fs'
 import { cp } from 'fs/promises'
@@ -110,11 +110,16 @@ function findPython(): string {
 }
 
 function createWindow(): void {
+  const { width: workWidth, height: workHeight } = screen.getPrimaryDisplay().workAreaSize
+  const windowWidth = Math.min(Math.max(Math.round(workWidth * 0.9), 1180), 1560)
+  const windowHeight = Math.min(Math.max(Math.round(workHeight * 0.88), 760), 980)
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: windowWidth,
+    height: windowHeight,
     minWidth: 1024,
     minHeight: 680,
+    center: true,
     title: 'Finance Tools - 数据采集工具',
     frame: false,
     titleBarStyle: 'hiddenInset',
@@ -261,6 +266,11 @@ function registerIpcHandlers(): void {
     return pythonManager?.sendRequest('data.delete', { id })
   })
 
+  // 仪表盘 IPC
+  ipcMain.handle('dashboard:summary', async () => {
+    return pythonManager?.sendRequest('dashboard.summary', {}) || {}
+  })
+
   // 窗口控制
   ipcMain.handle('window:minimize', async () => {
     mainWindow?.minimize()
@@ -353,7 +363,9 @@ app.whenReady().then(() => {
   //   - 打包后使用系统检测的 pythonExe
   const DEV_PYTHON_EXE = '/opt/anaconda3/envs/finance_tools/bin/python'
   const resolvedPythonExe = process.env.PYTHON_EXE || (!app.isPackaged ? DEV_PYTHON_EXE : pythonExe)
-  const isDebug = process.env.PYTHON_DEBUG === '1'
+  // const isDebug = process.env.PYTHON_DEBUG === '1'
+  // const isDebug = true
+  const isDebug = false
   if (isDebug || resolvedPythonExe !== pythonExe) {
     console.log(`[Main] Debug: ${isDebug}, Python exe: ${resolvedPythonExe}`)
   }

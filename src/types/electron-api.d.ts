@@ -1,5 +1,25 @@
 import type { MerchantConfig, TaskConfig } from './electron'
 
+export interface DashboardSummary {
+  stats: {
+    totalMerchants: number
+    activeMerchants: number
+    todayTasks: number
+    successRate: number
+    dataCount: number
+  }
+  trend: Array<{ label: string; value: number }>
+  recentActivities: Array<{
+    id: number
+    merchant: string
+    taskName?: string
+    action: string
+    time: string
+    status: 'success' | 'warning' | 'error'
+    collectedCount?: number
+  }>
+}
+
 export interface ElectronAPI {
   // Python 引擎状态
   pythonStart: () => Promise<{ success: boolean; status: string }>
@@ -41,6 +61,9 @@ export interface ElectronAPI {
   dataDelete: (id: string) => Promise<void>
   showSaveDialog: (options?: any) => Promise<{ canceled: boolean; filePath?: string }>
   copyFile: (srcPath: string, destPath: string) => Promise<string>
+
+  // 仪表盘
+  dashboardSummary: () => Promise<DashboardSummary>
 
   // 事件监听
   onPythonEvent: (callback: (event: string, data: any) => void) => void

@@ -18,8 +18,8 @@ onMounted(async () => {
     <AppSidebar />
 
     <!-- 主内容区 -->
-    <main class="flex-1 overflow-y-auto bg-dark-950" style="padding-top: env(titlebar-area-height, 28px);">
-      <div class="p-6">
+    <main class="flex-1 min-w-0 overflow-hidden bg-dark-950" style="padding-top: env(titlebar-area-height, 28px);">
+      <div class="h-full overflow-y-auto p-6">
         <RouterView v-slot="{ Component }">
           <transition name="page-fade" mode="out-in">
             <component :is="Component" />

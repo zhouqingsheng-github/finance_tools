@@ -64,6 +64,9 @@ class DatabaseManager:
             # ===== 迁移：为 tasks 表添加 task_type + browser_config 字段（浏览器自动化模式）=====
             self._migrate_tasks_browser_mode(conn)
 
+            # ===== 迁移：确保任务运行流水表存在（仪表盘真实统计）=====
+            self._migrate_task_runs_table(conn)
+
             conn.commit()
             logger.info(f"Database initialized at {self.db_path}")
             
@@ -332,6 +335,31 @@ class DatabaseManager:
 
         except Exception as e:
             logger.warning(f"Browser mode migration failed: {e}")
+
+    def _migrate_task_runs_table(self, conn: sqlite3.Connection):
+        """迁移：创建 task_runs 表（每次任务×商家执行流水）"""
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS task_runs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id         TEXT NOT NULL DEFAULT '',
+                    task_name       TEXT NOT NULL DEFAULT '',
+                    merchant_id     TEXT NOT NULL DEFAULT '',
+                    merchant_name   TEXT NOT NULL DEFAULT '',
+                    status          TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'success', 'error')),
+                    collected_count INTEGER NOT NULL DEFAULT 0,
+                    message         TEXT NOT NULL DEFAULT '',
+                    started_at      INTEGER NOT NULL,
+                    finished_at     INTEGER NOT NULL DEFAULT 0,
+                    duration_ms     INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_task_runs_merchant ON task_runs(merchant_id)")
+        except Exception as e:
+            logger.warning(f"Task runs migration failed: {e}")
 
     def get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""

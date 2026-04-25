@@ -17,8 +17,21 @@ from typing import Any, Callable, Optional
 # 将 python 目录加入 sys.path，确保模块可以正常导入
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import pydevd_pycharm
-pydevd_pycharm.settrace('192.168.140.159', port=5678, stdout_to_server=True, stderr_to_server=True)
+if os.environ.get('PYTHON_DEBUG') == '1':
+    try:
+        import pydevd_pycharm
+
+        debug_host = os.environ.get('PYTHON_DEBUG_HOST', '127.0.0.1')
+        debug_port = int(os.environ.get('PYTHON_DEBUG_PORT', '5678'))
+        pydevd_pycharm.settrace(
+            debug_host,
+            port=debug_port,
+            stdout_to_server=False,
+            stderr_to_server=False,
+            suspend=False,
+        )
+    except Exception as e:
+        print(f"[PythonDebug] Failed to attach debugger: {e}", file=sys.stderr)
 
 # 配置日志
 logging.basicConfig(
@@ -31,21 +44,21 @@ logger = logging.getLogger('finance-tools')
 
 class JsonRpcServer:
     """JSON-RPC 2.0 服务器，通过 stdin/stdout 与 Electron 通信"""
-    
+
     def __init__(self):
         self.handlers: dict = {}
         self.event_handlers: dict = {}
         self.request_id = 0
         self._lock = threading.Lock()
-        
+
         # 运行中的任务线程
         self._running_threads: dict[str, threading.Thread] = {}
         # 已取消的任务集合
         self._cancelled_merchants: set[str] = set()
-        
+
         # 注册所有处理器
         self._register_handlers()
-    
+
     def _register_handlers(self):
         """注册 RPC 方法处理器"""
         from engine.config_parser import ConfigParser
@@ -54,8 +67,14 @@ class JsonRpcServer:
         from engine.data_collector import DataCollector
         from engine.curl_parser import CurlParser
         from engine.browser_automation import BrowserAutomationEngine
-        from db.repositories import MerchantRepository, DataRepository, TaskRepository
-        
+        from db.repositories import (
+            MerchantRepository,
+            DataRepository,
+            TaskRepository,
+            TaskRunRepository,
+            DashboardRepository,
+        )
+
         # 初始化组件
         # 数据库路径：优先使用环境变量 FINANCE_TOOLS_DB（Electron 启动时设置）
         # 打包后指向 userData 目录（重装不丢失），开发模式回退到 shared/db/
@@ -65,10 +84,12 @@ class JsonRpcServer:
         else:
             db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'shared', 'db', 'finance_tools.db')
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
+
         self.merchant_repo = MerchantRepository(db_path)
         self.data_repo = DataRepository(db_path)
         self.task_repo = TaskRepository(db_path)
+        self.task_run_repo = TaskRunRepository(db_path)
+        self.dashboard_repo = DashboardRepository(db_path)
         self.credential_mgr = CredentialManager(db_path)
         self.config_parser = ConfigParser()
         self.curl_parser = CurlParser()
@@ -83,14 +104,14 @@ class JsonRpcServer:
             self.credential_mgr,
             event_callback=self.emit_event
         )
-        
+
         # 注册商家相关方法
         self.register('merchant.list', self.handle_merchant_list)
         self.register('merchant.create', self.handle_merchant_create)
         self.register('merchant.update', self.handle_merchant_update)
         self.register('merchant.delete', self.handle_merchant_delete)
         self.register('merchant.testLogin', self.handle_test_login)
-        
+
         # 注册任务方法
         self.register('task.start', self.handle_task_start)
         self.register('task.stop', self.handle_task_stop)
@@ -105,18 +126,21 @@ class JsonRpcServer:
         self.register('taskConfig.delete', self.handle_task_config_delete)
         self.register('taskConfig.execute', self.handle_task_config_execute)
         self.register('taskConfig.parseCurl', self.handle_parse_curl)
-        
+
         # 注册数据方法
         self.register('data.list', self.handle_data_list)
         self.register('data.export', self.handle_data_export)
         self.register('data.delete', self.handle_data_delete)
-        
+
+        # 注册仪表盘方法
+        self.register('dashboard.summary', self.handle_dashboard_summary)
+
         logger.info("RPC handlers registered")
-    
+
     def register(self, method: str, handler: Callable):
         """注册一个 RPC 方法"""
         self.handlers[method] = handler
-    
+
     def emit_event(self, event: str, data: Any = None):
         """发送事件通知到 Electron"""
         message = json.dumps({
@@ -126,7 +150,7 @@ class JsonRpcServer:
         }, ensure_ascii=False) + '\n'
         sys.stdout.write(message)
         sys.stdout.flush()
-    
+
     def send_response(self, request_id: int, result: Any = None, error: dict = None):
         """发送 RPC 响应"""
         response = {
@@ -137,38 +161,38 @@ class JsonRpcServer:
             response['error'] = error
         else:
             response['result'] = result
-        
+
         sys.stdout.write(json.dumps(response, ensure_ascii=False) + '\n')
         sys.stdout.flush()
-    
+
     def handle_request(self, request: dict):
         """处理单个 RPC 请求"""
         try:
             method = request.get('method')
             params = request.get('params', {})
             request_id = request.get('id', 0)
-            
+
             if not method:
                 self.send_response(request_id, error={
                     'code': -32600,
                     'message': 'Invalid Request: missing method'
                 })
                 return
-            
+
             if method == 'system.exit':
                 logger.info("Received exit command")
                 sys.exit(0)
-            
+
             if method not in self.handlers:
                 self.send_response(request_id, error={
                     'code': -32601,
                     'message': f'Method not found: {method}'
                 })
                 return
-            
+
             handler = self.handlers[method]
             result = handler(params)
-            
+
             # 如果是协程，需要等待结果
             if hasattr(result, '__await__'):
                 import asyncio
@@ -184,9 +208,9 @@ class JsonRpcServer:
                         result = loop.run_until_complete(result)
                 except RuntimeError:
                     result = asyncio.run(result)
-            
+
             self.send_response(request_id, result=result)
-            
+
         except Exception as e:
             logger.error(f"Error handling request: {e}")
             logger.error(traceback.format_exc())
@@ -194,13 +218,13 @@ class JsonRpcServer:
                 request.get('id', 0),
                 error={'code': -32603, 'message': f'Internal error: {str(e)}'}
             )
-    
+
     def run(self):
         """启动消息循环，从 stdin 读取请求"""
         logger.info("Python backend started, waiting for requests...")
         sys.stderr.write("[Finance-Tools] Python engine ready\n")
         sys.stderr.flush()
-        
+
         buffer = ''
         while True:
             try:
@@ -208,14 +232,14 @@ class JsonRpcServer:
                 if not line:
                     logger.info("stdin closed, exiting...")
                     break
-                
+
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 request = json.loads(line)
                 self.handle_request(request)
-                
+
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parse error: {e}, input: {line[:100]}")
             except Exception as e:
@@ -223,29 +247,29 @@ class JsonRpcServer:
                 logger.error(traceback.format_exc())
 
     # ==================== 商家相关处理器 ====================
-    
+
     def handle_merchant_list(self, params: dict) -> list:
         return self.merchant_repo.list_all()
-    
+
     def handle_merchant_create(self, params: dict) -> dict:
         merchant = self.merchant_repo.create(params)
         return merchant
-    
+
     def handle_merchant_update(self, params: dict) -> bool:
         id_ = params.pop('id', None)
         return self.merchant_repo.update(id_, params)
-    
+
     def handle_merchant_delete(self, params: dict) -> bool:
         id_ = params.get('id')
         return self.merchant_repo.delete(id_)
-    
+
     async def handle_test_login(self, params: dict) -> dict:
         id_ = params.get('id')
         success, message = await self.login_engine.test_login(id_)
         return {'success': success, 'message': message}
 
     # ==================== 任务相关处理器 ====================
-    
+
     def handle_task_start(self, params: dict) -> dict:
         merchant_id = params.get('merchantId')
         if not merchant_id:
@@ -258,16 +282,16 @@ class JsonRpcServer:
         self._running_threads[merchant_id] = t
         logger.info(f"Task started for merchant {merchant_id}")
         return {'success': True, 'message': '任务已启动'}
-    
+
     def handle_task_stop(self, params: dict) -> dict:
         merchant_id = params.get('merchantId')
         # 设置取消标志
         self._cancelled_merchants.add(merchant_id)
         logger.info(f"Task stop requested for merchant {merchant_id}")
-        
+
         # 清理线程引用
         self._running_threads.pop(merchant_id, None)
-        
+
         self.emit_event('task:progress', {
             'merchantId': merchant_id,
             'status': 'error',
@@ -275,7 +299,7 @@ class JsonRpcServer:
             'message': '用户取消了任务'
         })
         return {'success': True, 'message': '任务已停止请求已发送'}
-    
+
     def handle_task_start_all(self, params: dict) -> dict:
         merchants = self.merchant_repo.list_active()
         if not merchants:
@@ -287,7 +311,7 @@ class JsonRpcServer:
             t.start()
             self._running_threads[mid] = t
         return {'success': True, 'message': f'已启动 {len(merchants)} 个采集任务'}
-    
+
     def handle_task_stop_all(self, params: dict) -> dict:
         # 取消所有运行中的任务
         for merchant_id in list(self._running_threads.keys()):
@@ -298,29 +322,34 @@ class JsonRpcServer:
                 'progress': 0,
                 'message': '用户取消了所有任务'
             })
-        
+
         # 清空
         self._running_threads.clear()
         logger.info("All tasks stop requested")
         return {'success': True, 'message': '已发送停止所有任务的请求'}
 
     # ==================== 数据相关处理器 ====================
-    
+
     def handle_data_list(self, params: dict) -> dict:
         page = params.get('page', 1)
         page_size = params.get('pageSize', 15)
         records, total = self.data_repo.list(params, page, page_size)
         return {'records': records, 'total': total}
-    
+
     def handle_data_export(self, params: dict) -> str:
         merchant_id = params.get('merchantId')
         ids = params.get('ids')
         export_path = self.data_repo.export_to_excel(merchant_id, ids=ids)
         return export_path
-    
+
     def handle_data_delete(self, params: dict) -> bool:
         id_ = params.get('id')
         return self.data_repo.delete(id_)
+
+    # ==================== 仪表盘相关处理器 ====================
+
+    def handle_dashboard_summary(self, params: dict) -> dict:
+        return self.dashboard_repo.summary()
 
     # ==================== 任务配置相关处理器 ====================
 
@@ -373,7 +402,7 @@ class JsonRpcServer:
         return {'success': True, 'message': '任务已开始执行'}
 
     # ==================== 内部方法 ====================
-    
+
     def _run_collection_sync(self, merchant_id: str):
         """同步包装：在后台线程中执行数据采集流程"""
         try:
@@ -413,7 +442,7 @@ class JsonRpcServer:
         finally:
             self._running_threads.pop(task_id, None)
             self._cancelled_merchants.discard(task_id)
-    
+
     def _is_cancelled(self, merchant_id: str) -> bool:
         """检查任务是否已被用户取消"""
         return merchant_id in self._cancelled_merchants
@@ -459,7 +488,7 @@ class JsonRpcServer:
             return None
 
     async def _save_response_data(self, task_id: str, merchant_id: str, task: dict,
-                                   json_data: any, extract_config: dict) -> int:
+                                  json_data: any, extract_config: dict) -> int:
         """
         从响应中提取数据，按字段映射合并为单条 JSON 记录保存
         一次任务执行 = 一条 collected_data 记录，raw_data 是字段映射后的结构化 JSON
@@ -480,7 +509,8 @@ class JsonRpcServer:
             else:
                 data_records = [{'raw': str(json_data)}]
 
-        logger.info(f"[SaveData {task_id}] 提取到 {len(data_records) if isinstance(data_records, list) else 1} 条原始记录")
+        logger.info(
+            f"[SaveData {task_id}] 提取到 {len(data_records) if isinstance(data_records, list) else 1} 条原始记录")
 
         # 统一格式：raw_data = { _count: N, _records: [ {字段: 值}, ... ] }
         # 单条数据也包装为 _records 数组，保持格式一致
@@ -525,20 +555,24 @@ class JsonRpcServer:
         return 1
 
     async def _run_paginated_collection(self, client, base_request_config: dict,
-                                         task_id: str, merchant_id: str, task: dict,
-                                         cookie_header: str, first_page_data: any) -> int:
+                                        task_id: str, merchant_id: str, task: dict,
+                                        cookie_header: str, first_page_data: any) -> int:
         """分页循环：基于接口返回的分页信息自动翻页，所有页数据合并为一条记录保存"""
         import httpx
 
         pagination_config = task.get('pagination')
         if isinstance(pagination_config, str):
-            try: pagination_config = json.loads(pagination_config)
-            except: pagination_config = {}
+            try:
+                pagination_config = json.loads(pagination_config)
+            except:
+                pagination_config = {}
 
         extract_config = task.get('response_extract', {})
         if isinstance(extract_config, str):
-            try: extract_config = json.loads(extract_config)
-            except: extract_config = {}
+            try:
+                extract_config = json.loads(extract_config)
+            except:
+                extract_config = {}
 
         # 分页参数名
         page_field = pagination_config.get('page_field') or 'pageNum'
@@ -555,7 +589,8 @@ class JsonRpcServer:
         else:
             page_size = 20
 
-        logger.info(f"[Paginate {task_id}] 配置: page_field={page_field}, size_field={size_field}, 实际pageSize={page_size}（来自请求体）")
+        logger.info(
+            f"[Paginate {task_id}] 配置: page_field={page_field}, size_field={size_field}, 实际pageSize={page_size}（来自请求体）")
         logger.info(f"[Paginate {task_id}] first_page_data type={type(first_page_data).__name__}")
 
         # 累积所有页的原始数据
@@ -597,7 +632,8 @@ class JsonRpcServer:
 
             current_page = 1
             consecutive_empty = 0
-            logger.info(f"[Paginate {task_id}] 翻页循环初始化: current_page={current_page}, effective_max_page={effective_max_page}")
+            logger.info(
+                f"[Paginate {task_id}] 翻页循环初始化: current_page={current_page}, effective_max_page={effective_max_page}")
 
             while True:
                 current_page += 1
@@ -625,20 +661,22 @@ class JsonRpcServer:
                     method = page_config.pop('method', 'GET')
 
                     _body_json = page_config.get('json')
-                    
+
                     if _body_json and isinstance(_body_json, dict):
                         is_dotted = '.' in page_field
-                        
+
                         if is_dotted:
                             old_val = self.curl_parser._get_value_by_path(_body_json, page_field)
                             self.curl_parser._set_value_by_path(_body_json, page_field, current_page)
                             new_val = self.curl_parser._get_value_by_path(_body_json, page_field)
-                            logger.info(f"[Paginate {task_id}] 第{current_page}页 '{page_field}': {old_val} => {new_val}")
+                            logger.info(
+                                f"[Paginate {task_id}] 第{current_page}页 '{page_field}': {old_val} => {new_val}")
                         else:
                             old_val = self.curl_parser._find_first_value(_body_json, page_field)
                             self.curl_parser._set_nested_value_recursive(_body_json, page_field, current_page)
                             new_val = self.curl_parser._find_first_value(_body_json, page_field)
-                            logger.info(f"[Paginate {task_id}] 第{current_page}页 '{page_field}': {old_val} => {new_val}")
+                            logger.info(
+                                f"[Paginate {task_id}] 第{current_page}页 '{page_field}': {old_val} => {new_val}")
 
                         if size_field:
                             sz_dotted = '.' in size_field
@@ -648,7 +686,7 @@ class JsonRpcServer:
                                 self.curl_parser._set_nested_value_recursive(_body_json, size_field, page_size)
 
                         page_obj = self._find_page_object(_body_json, page_field)
-                        
+
                         self.emit_event('task:log', {
                             'taskId': task_id, 'merchantId': merchant_id,
                             'log': {
@@ -674,8 +712,10 @@ class JsonRpcServer:
                                 resp = await client.request(method, **page_config)
                             break
                         except Exception as retry_err:
-                            if attempt < 2: await asyncio.sleep(1.5)
-                            else: raise retry_err
+                            if attempt < 2:
+                                await asyncio.sleep(1.5)
+                            else:
+                                raise retry_err
 
                     if resp.status_code in (401, 403):
                         self.credential_mgr.invalidate(merchant_id)
@@ -687,11 +727,12 @@ class JsonRpcServer:
                     page_json = resp.json()
                     logger.info(f"[Paginate {task_id}] 第{current_page}页响应: HTTP {resp.status_code}")
                     total_pages_fetched += 1
-                    
+
                     # 提取并累积（不逐页保存）
                     page_records = self._extract_records_from_response(page_json, extract_config)
                     all_extracted_records.extend(page_records)
-                    logger.info(f"[Paginate {task_id}] 第{current_page}页提取 {len(page_records)} 条，累计 {len(all_extracted_records)} 条")
+                    logger.info(
+                        f"[Paginate {task_id}] 第{current_page}页提取 {len(page_records)} 条，累计 {len(all_extracted_records)} 条")
 
                     if len(page_records) == 0:
                         consecutive_empty += 1
@@ -709,14 +750,16 @@ class JsonRpcServer:
                     logger.warning(f'第{current_page}页失败: {e}')
                     self.emit_event('task:log', {
                         'taskId': task_id, 'merchantId': merchant_id,
-                        'log': {'level': 'error', 'message': f'第{current_page}页请求失败: {e}', 'timestamp': time.time()}
+                        'log': {'level': 'error', 'message': f'第{current_page}页请求失败: {e}',
+                                'timestamp': time.time()}
                     })
                     break
 
         # ========== 所有页数据收集完毕，合并为一条记录保存 ==========
         saved_count = await self._save_merged_data(task_id, merchant_id, task, all_extracted_records)
 
-        logger.info(f"[Paginate {task_id}] 分页完成！共请求 {total_pages_fetched} 页，解析出 {len(all_extracted_records)} 条数据并保存")
+        logger.info(
+            f"[Paginate {task_id}] 分页完成！共请求 {total_pages_fetched} 页，解析出 {len(all_extracted_records)} 条数据并保存")
         self.emit_event('task:log', {
             'taskId': task_id, 'merchantId': merchant_id,
             'log': {
@@ -741,7 +784,7 @@ class JsonRpcServer:
                 return [{'raw': str(response_json)}]
 
     async def _save_merged_data(self, task_id: str, merchant_id: str, task: dict,
-                                 all_records: list[dict]) -> int:
+                                all_records: list[dict]) -> int:
         """将所有累积的数据合并为一条 collected_data 记录（统一 _records 格式）"""
         merchant = self.merchant_repo.get_by_id(merchant_id)
         merchant_name = merchant.get('name', '') if merchant else ''
@@ -780,9 +823,9 @@ class JsonRpcServer:
                 'message': '商家不存在'
             })
             return
-        
+
         mid = merchant['id']
-        
+
         try:
             # 1. 发送进度更新
             self.emit_event('task:progress', {
@@ -791,21 +834,21 @@ class JsonRpcServer:
                 'progress': 10,
                 'message': '开始登录...'
             })
-            
+
             # 检查取消
             if self._is_cancelled(mid):
                 return
-            
+
             # 2. 执行登录
             login_result = await self.login_engine.login(mid)
             if not login_result['success']:
                 raise Exception(login_result['message'])
-            
+
             # 登录后检查取消
             if self._is_cancelled(mid):
                 logger.info(f"Collection cancelled after login for {mid}")
                 return
-            
+
             # 3. 更新进度
             self.emit_event('task:progress', {
                 'merchantId': mid,
@@ -813,10 +856,10 @@ class JsonRpcServer:
                 'progress': 50,
                 'message': '登录成功，开始采集数据...'
             })
-            
+
             # 4. 数据采集
             collected_count = await self.data_collector.collect(mid)
-            
+
             # 5. 完成通知
             self.emit_event('task:progress', {
                 'merchantId': mid,
@@ -824,7 +867,7 @@ class JsonRpcServer:
                 'progress': 100,
                 'message': f'采集完成，共获取 {collected_count} 条数据'
             })
-            
+
         except Exception as e:
             # 如果是因取消而中断的异常，不报错
             if self._is_cancelled(mid):
@@ -864,21 +907,37 @@ class JsonRpcServer:
 
         for idx, merchant_id in enumerate(merchant_ids):
             merchant_name = ''
+            run_started_at = int(time.time())
             try:
                 # 获取商家名
                 m = self.merchant_repo.get_by_id(merchant_id)
                 merchant_name = m.get('name', '') if m else merchant_id
+                run_started_at = int(time.time())
 
-                logger.info(f"[Task {task_id}] === 商家 {idx+1}/{total_merchants}: {merchant_name} ({merchant_id}) ===")
+                logger.info(
+                    f"[Task {task_id}] === 商家 {idx + 1}/{total_merchants}: {merchant_name} ({merchant_id}) ===")
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id, 'status': 'running',
                     'progress': int((idx / total_merchants) * 100),
-                    'message': f'[{idx+1}/{total_merchants}] 开始执行: {merchant_name}'
+                    'message': f'[{idx + 1}/{total_merchants}] 开始执行: {merchant_name}'
                 })
 
                 count = await self._execute_for_merchant(task, task_id, merchant_id)
+                run_finished_at = int(time.time())
                 success_merchant_count += 1
                 total_collected_count += count
+                self.task_run_repo.create({
+                    'task_id': task_id,
+                    'task_name': task_name,
+                    'merchant_id': merchant_id,
+                    'merchant_name': merchant_name,
+                    'status': 'success',
+                    'collected_count': count,
+                    'message': f'采集完成，{count}条数据',
+                    'started_at': run_started_at,
+                    'finished_at': run_finished_at,
+                    'duration_ms': max((run_finished_at - run_started_at) * 1000, 0),
+                })
 
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id, 'status': 'success',
@@ -888,9 +947,22 @@ class JsonRpcServer:
 
             except Exception as e:
                 err_msg = f'❌ [{merchant_name or merchant_id}] 执行失败: {e}'
+                run_finished_at = int(time.time())
                 error_messages.append(err_msg)
                 logger.error(f"[Task {task_id}] 商家 {merchant_id} 失败: {e}")
                 logger.error(f"[Task {task_id}] 堆栈信息:\n{traceback.format_exc()}")
+                self.task_run_repo.create({
+                    'task_id': task_id,
+                    'task_name': task_name,
+                    'merchant_id': merchant_id,
+                    'merchant_name': merchant_name or merchant_id,
+                    'status': 'error',
+                    'collected_count': 0,
+                    'message': str(e),
+                    'started_at': run_started_at,
+                    'finished_at': run_finished_at,
+                    'duration_ms': max((run_finished_at - run_started_at) * 1000, 0),
+                })
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id, 'status': 'error',
                     'message': err_msg
@@ -904,7 +976,8 @@ class JsonRpcServer:
         if error_messages:
             result_summary += f'（{len(error_messages)}个失败）'
 
-        self.task_repo.update(task_id, {'status': final_status, 'last_run_at': int(time.time()), 'last_result': result_summary})
+        self.task_repo.update(task_id,
+                              {'status': final_status, 'last_run_at': int(time.time()), 'last_result': result_summary})
         self.emit_event('task:progress', {
             'taskId': task_id, 'status': final_status, 'progress': 100,
             'message': f'📊 任务完成: {result_summary}'

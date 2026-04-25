@@ -37,6 +37,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   showSaveDialog: (options?: any) => ipcRenderer.invoke('dialog:save', options),
   copyFile: (srcPath: string, destPath: string) => ipcRenderer.invoke('file:copy', srcPath, destPath),
 
+  // 仪表盘
+  dashboardSummary: () => ipcRenderer.invoke('dashboard:summary'),
+
   // 事件监听
   onPythonEvent: (callback: (event: string, data: any) => void) => {
     ipcRenderer.on('python-event', (_event, data) => callback(data.event, data.data))

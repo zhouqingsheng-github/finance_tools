@@ -108,11 +108,15 @@ function findPython() {
     return candidates[0];
 }
 function createWindow() {
+    const { width: workWidth, height: workHeight } = electron_1.screen.getPrimaryDisplay().workAreaSize;
+    const windowWidth = Math.min(Math.max(Math.round(workWidth * 0.9), 1180), 1560);
+    const windowHeight = Math.min(Math.max(Math.round(workHeight * 0.88), 760), 980);
     mainWindow = new electron_1.BrowserWindow({
-        width: 1280,
-        height: 800,
+        width: windowWidth,
+        height: windowHeight,
         minWidth: 1024,
         minHeight: 680,
+        center: true,
         title: 'Finance Tools - 数据采集工具',
         frame: false,
         titleBarStyle: 'hiddenInset',
@@ -234,6 +238,10 @@ function registerIpcHandlers() {
     electron_1.ipcMain.handle('data:delete', async (_event, id) => {
         return pythonManager?.sendRequest('data.delete', { id });
     });
+    // 仪表盘 IPC
+    electron_1.ipcMain.handle('dashboard:summary', async () => {
+        return pythonManager?.sendRequest('dashboard.summary', {}) || {};
+    });
     // 窗口控制
     electron_1.ipcMain.handle('window:minimize', async () => {
         mainWindow?.minimize();
@@ -318,7 +326,9 @@ electron_1.app.whenReady().then(() => {
     //   - 打包后使用系统检测的 pythonExe
     const DEV_PYTHON_EXE = '/opt/anaconda3/envs/finance_tools/bin/python';
     const resolvedPythonExe = process.env.PYTHON_EXE || (!electron_1.app.isPackaged ? DEV_PYTHON_EXE : pythonExe);
-    const isDebug = process.env.PYTHON_DEBUG === '1';
+    // const isDebug = process.env.PYTHON_DEBUG === '1'
+    // const isDebug = true
+    const isDebug = false;
     if (isDebug || resolvedPythonExe !== pythonExe) {
         console.log(`[Main] Debug: ${isDebug}, Python exe: ${resolvedPythonExe}`);
     }

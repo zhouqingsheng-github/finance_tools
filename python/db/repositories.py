@@ -802,3 +802,153 @@ class DataRepository:
                 writer.writerow(row)
 
         return filepath
+
+
+class TaskRunRepository:
+    """任务运行流水访问"""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+
+    def _get_db(self) -> DatabaseManager:
+        from db.database import init_database
+        return init_database(self.db_path)
+
+    def create(self, data: dict) -> int:
+        db = self._get_db()
+        conn = db.get_connection()
+        try:
+            cursor = conn.execute("""
+                INSERT INTO task_runs (
+                    task_id, task_name, merchant_id, merchant_name,
+                    status, collected_count, message,
+                    started_at, finished_at, duration_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data.get('task_id', ''),
+                data.get('task_name', ''),
+                data.get('merchant_id', ''),
+                data.get('merchant_name', ''),
+                data.get('status', 'running'),
+                data.get('collected_count', 0),
+                data.get('message', ''),
+                data.get('started_at', int(time.time())),
+                data.get('finished_at', 0),
+                data.get('duration_ms', 0),
+            ))
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+
+class DashboardRepository:
+    """仪表盘聚合查询"""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+
+    def _get_db(self) -> DatabaseManager:
+        from db.database import init_database
+        return init_database(self.db_path)
+
+    @staticmethod
+    def _start_of_today() -> int:
+        now = time.localtime()
+        return int(time.mktime((now.tm_year, now.tm_mon, now.tm_mday, 0, 0, 0, now.tm_wday, now.tm_yday, now.tm_isdst)))
+
+    @staticmethod
+    def _format_ago(ts: int) -> str:
+        if not ts:
+            return '-'
+        diff = max(int(time.time()) - ts, 0)
+        if diff < 60:
+            return '刚刚'
+        if diff < 3600:
+            return f'{diff // 60}分钟前'
+        if diff < 86400:
+            return f'{diff // 3600}小时前'
+        return f'{diff // 86400}天前'
+
+    def _sum_collected_records(self) -> int:
+        data_repo = DataRepository(self.db_path)
+        records, _ = data_repo.list({}, page=1, page_size=50000)
+        total = 0
+        for record in records:
+            raw = record.get('raw_data', {})
+            if isinstance(raw, dict):
+                if isinstance(raw.get('_count'), int):
+                    total += raw['_count']
+                elif isinstance(raw.get('_records'), list):
+                    total += len(raw['_records'])
+                else:
+                    total += 1
+            else:
+                total += 1
+        return total
+
+    def summary(self) -> dict:
+        db = self._get_db()
+        conn = db.get_connection()
+        today_start = self._start_of_today()
+        now = int(time.time())
+        day_ago = now - 24 * 3600
+
+        try:
+            merchant_total = conn.execute("SELECT COUNT(*) AS c FROM merchants WHERE is_deleted = 0").fetchone()['c']
+            active_total = conn.execute("SELECT COUNT(*) AS c FROM merchants WHERE is_deleted = 0 AND status = 'active'").fetchone()['c']
+            today_runs = conn.execute("SELECT COUNT(*) AS c FROM task_runs WHERE started_at >= ?", (today_start,)).fetchone()['c']
+            success_runs = conn.execute("SELECT COUNT(*) AS c FROM task_runs WHERE started_at >= ? AND status = 'success'", (today_start,)).fetchone()['c']
+            success_rate = round(success_runs * 100 / today_runs) if today_runs else 0
+
+            trend_rows = conn.execute("""
+                SELECT started_at, collected_count
+                FROM task_runs
+                WHERE started_at >= ?
+                ORDER BY started_at ASC
+            """, (day_ago,)).fetchall()
+
+            bucket_count = 6
+            bucket_seconds = 4 * 3600
+            base = now - (bucket_count - 1) * bucket_seconds
+            buckets = [
+                {'label': time.strftime('%H:%M', time.localtime(base + i * bucket_seconds)), 'value': 0}
+                for i in range(bucket_count)
+            ]
+            for row in trend_rows:
+                idx = min(max(int((row['started_at'] - base) // bucket_seconds), 0), bucket_count - 1)
+                buckets[idx]['value'] += row['collected_count'] or 0
+
+            recent_rows = conn.execute("""
+                SELECT *
+                FROM task_runs
+                ORDER BY started_at DESC
+                LIMIT 8
+            """).fetchall()
+            recent = []
+            for row in recent_rows:
+                status = row['status']
+                default_action = '数据采集完成' if status == 'success' else ('数据采集失败' if status == 'error' else '任务执行中')
+                recent.append({
+                    'id': row['id'],
+                    'merchant': row['merchant_name'] or row['merchant_id'] or '未知商家',
+                    'taskName': row['task_name'],
+                    'action': (row['message'] or default_action)[:80],
+                    'time': self._format_ago(row['finished_at'] or row['started_at']),
+                    'status': 'success' if status == 'success' else ('error' if status == 'error' else 'warning'),
+                    'collectedCount': row['collected_count'] or 0,
+                })
+
+            return {
+                'stats': {
+                    'totalMerchants': merchant_total,
+                    'activeMerchants': active_total,
+                    'todayTasks': today_runs,
+                    'successRate': success_rate,
+                    'dataCount': self._sum_collected_records(),
+                },
+                'trend': buckets,
+                'recentActivities': recent,
+            }
+        finally:
+            conn.close()

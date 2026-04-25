@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useMerchantStore } from '@/stores/merchant'
-import { useTaskStore } from '@/stores/task'
 import { useAppStore } from '@/stores/app'
+import { dashboardApi, emptyDashboardSummary } from '@/api/dashboard'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -29,23 +28,37 @@ use([
   GridComponent
 ])
 
-const merchantStore = useMerchantStore()
-const taskStore = useTaskStore()
 const appStore = useAppStore()
+const loading = ref(false)
+const summary = ref(emptyDashboardSummary())
+
+const fetchSummary = async () => {
+  loading.value = true
+  try {
+    summary.value = await dashboardApi.summary()
+  } catch (error) {
+    console.error('Failed to load dashboard summary:', error)
+    summary.value = emptyDashboardSummary()
+  } finally {
+    loading.value = false
+  }
+}
+
+let refreshTimer: number | undefined
+const scheduleRefresh = () => {
+  window.clearTimeout(refreshTimer)
+  refreshTimer = window.setTimeout(fetchSummary, 300)
+}
 
 onMounted(async () => {
-  await merchantStore.fetchMerchants()
+  await fetchSummary()
+  window.electronAPI.onPythonEvent((event) => {
+    if (event === 'task:progress') scheduleRefresh()
+  })
 })
 
-const stats = computed(() => ({
-  totalMerchants: merchantStore.merchantCount,
-  activeMerchants: merchantStore.activeMerchants.length,
-  todayTasks: taskStore.successCount + taskStore.errorCount,
-  successRate: taskStore.successCount > 0 
-    ? Math.round((taskStore.successCount / (taskStore.successCount + taskStore.errorCount)) * 100)
-    : 0,
-  dataCount: 0 // 模拟数据总量
-}))
+const stats = computed(() => summary.value.stats)
+const recentActivities = computed(() => summary.value.recentActivities)
 
 const chartOption = computed(() => ({
   tooltip: {
@@ -63,7 +76,7 @@ const chartOption = computed(() => ({
   xAxis: {
     type: 'category',
     boundaryGap: false,
-    data: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
+    data: summary.value.trend.map(item => item.label),
     axisLine: { lineStyle: { color: '#334155' } },
     axisLabel: { color: '#64748b', fontSize: 11 }
   },
@@ -89,17 +102,10 @@ const chartOption = computed(() => ({
           ]
         }
       },
-      data: [12, 8, 24, 35, 28, 42]
+      data: summary.value.trend.map(item => item.value)
     }
   ]
 }))
-
-const recentActivities = ref([
-  { id: 1, merchant: '美团商家后台', action: '数据采集完成', time: '10分钟前', status: 'success' },
-  { id: 2, merchant: '携程商户中心', action: '登录凭证刷新', time: '25分钟前', status: 'success' },
-  { id: 3, merchant: '飞猪酒店后台', action: '滑块验证码处理', time: '1小时前', status: 'warning' },
-  { id: 4, merchant: '抖音来客', action: '数据采集失败', time: '2小时前', status: 'error' }
-])
 
 const statCards = [
   { key: 'totalMerchants', label: '已配置商家', icon: Store, color: 'from-primary to-cyan-400' },
@@ -110,7 +116,7 @@ const statCards = [
 </script>
 
 <template>
-  <div class="space-y-6">
+  <div class="dashboard-page flex h-full min-h-0 flex-col gap-6">
     <!-- 页面标题 -->
     <div class="flex items-center justify-between">
       <div>
@@ -154,25 +160,25 @@ const statCards = [
     </div>
 
     <!-- 图表和活动区域 -->
-    <div class="grid grid-cols-3 gap-5">
+    <div class="grid flex-1 min-h-0 grid-cols-3 items-stretch gap-5">
       <!-- 趋势图表 -->
-      <div class="col-span-2 glass-card p-5">
-        <div class="flex items-center justify-between mb-4">
+      <div class="col-span-2 glass-card p-5 flex min-h-0 flex-col">
+        <div class="flex items-center justify-between mb-4 flex-shrink-0">
           <h2 class="text-base font-medium text-dark-100">采集趋势（近24h）</h2>
           <button class="text-xs text-dark-400 hover:text-primary transition-colors flex items-center gap-1">
             查看详情 <ArrowRight class="w-3 h-3" />
           </button>
         </div>
-        <VChart :option="chartOption" autoresize class="w-full h-[260px]" />
+        <VChart :option="chartOption" autoresize class="w-full flex-1 min-h-0" />
       </div>
 
       <!-- 最近活动 -->
-      <div class="glass-card p-5">
-        <div class="flex items-center justify-between mb-4">
+      <div class="glass-card p-5 flex h-full min-h-0 flex-col">
+        <div class="flex items-center justify-between mb-4 flex-shrink-0">
           <h2 class="text-base font-medium text-dark-100">最近活动</h2>
           <Clock class="w-4 h-4 text-dark-500" />
         </div>
-        <div class="space-y-3">
+        <div v-if="recentActivities.length" class="space-y-3 flex-1 min-h-0 overflow-y-auto pr-1 activity-scroll">
           <div 
             v-for="activity in recentActivities" 
             :key="activity.id"
@@ -201,9 +207,13 @@ const statCards = [
             </div>
           </div>
         </div>
+        <div v-else class="flex-1 min-h-0 flex flex-col items-center justify-center text-dark-500">
+          <Activity class="w-8 h-8 mb-3 opacity-60" />
+          <p class="text-sm">{{ loading ? '正在读取运行记录...' : '暂无任务运行记录' }}</p>
+        </div>
 
         <!-- 快捷操作 -->
-        <div class="mt-4 pt-4 border-t border-dark-700/50 space-y-2">
+        <div class="mt-4 pt-4 border-t border-dark-700/50 space-y-2 flex-shrink-0">
           <button 
             @click="$router.push('/tasks')"
             class="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors text-sm font-medium"
@@ -221,3 +231,38 @@ const statCards = [
     </div>
   </div>
 </template>
+
+<style scoped>
+.dashboard-page {
+  height: calc(100vh - env(titlebar-area-height, 28px) - 48px);
+  overflow: hidden;
+}
+
+.activity-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+@media (max-height: 760px) {
+  .dashboard-page {
+    gap: 1rem;
+  }
+}
+
+.activity-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.activity-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.activity-scroll::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 999px;
+}
+
+.activity-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.55);
+}
+</style>

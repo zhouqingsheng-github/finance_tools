@@ -127,6 +127,27 @@ npm run dev:electron
 npm run dev
 ```
 
+### 桌面端打包
+
+```bash
+# Windows x64
+npm run build
+
+# macOS: 同时生成 Intel(x64) 和 Apple Silicon(arm64) DMG
+npm run build:mac
+
+# macOS: 只生成 Intel 包
+npm run build:mac:x64
+
+# macOS: 只生成 Apple Silicon 包
+npm run build:mac:arm64
+
+# macOS: 生成 universal 包
+npm run build:mac:universal
+```
+
+> 注意：如果后续将 `resources/python-runtime` 打入安装包，macOS 也需要准备对应架构的 Python runtime；Intel 包使用 x64 runtime，Apple Silicon 包使用 arm64 runtime，universal 包需要确认所有原生依赖都支持 universal 或在运行时正确选择架构。
+
 ## 使用说明
 
 ### 业务采集配置文档

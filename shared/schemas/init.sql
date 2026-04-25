@@ -82,4 +82,23 @@ CREATE TABLE IF NOT EXISTS tasks (
     is_deleted      INTEGER DEFAULT 0
 );
 
+-- 任务运行流水表（用于仪表盘统计、趋势和最近活动）
+CREATE TABLE IF NOT EXISTS task_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL DEFAULT '',
+    task_name       TEXT NOT NULL DEFAULT '',
+    merchant_id     TEXT NOT NULL DEFAULT '',
+    merchant_name   TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running', 'success', 'error')),
+    collected_count INTEGER NOT NULL DEFAULT 0,
+    message         TEXT NOT NULL DEFAULT '',
+    started_at      INTEGER NOT NULL,
+    finished_at     INTEGER NOT NULL DEFAULT 0,
+    duration_ms     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
+CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_runs_merchant ON task_runs(merchant_id);
 
