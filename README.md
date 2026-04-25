@@ -129,6 +129,12 @@ npm run dev
 
 ## 使用说明
 
+### 业务采集配置文档
+
+浏览器自动化、抓包 CURL、动态参数、Storage / Session / Cookie 取值规则见：
+
+- [自动化业务采集配置说明](docs/automation-capture.md)
+
 ### 1. 配置商家
 
 进入「商家配置」页面 → 点击「添加商家」→ 填写：

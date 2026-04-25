@@ -858,7 +858,8 @@ class JsonRpcServer:
 
         task_name = task.get('name', '')
         total_merchants = len(merchant_ids)
-        success_count = 0
+        success_merchant_count = 0
+        total_collected_count = 0
         error_messages = []
 
         for idx, merchant_id in enumerate(merchant_ids):
@@ -876,7 +877,8 @@ class JsonRpcServer:
                 })
 
                 count = await self._execute_for_merchant(task, task_id, merchant_id)
-                success_count += count
+                success_merchant_count += 1
+                total_collected_count += count
 
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id, 'status': 'success',
@@ -897,8 +899,8 @@ class JsonRpcServer:
                 continue
 
         # 全部完成后的汇总状态
-        final_status = 'success' if not error_messages else ('error' if success_count == 0 else 'success')
-        result_summary = f'成功 {success_count} / 共 {total_merchants} 个商家'
+        final_status = 'success' if not error_messages else ('error' if success_merchant_count == 0 else 'success')
+        result_summary = f'成功 {success_merchant_count} / 共 {total_merchants} 个商家，采集 {total_collected_count} 条数据'
         if error_messages:
             result_summary += f'（{len(error_messages)}个失败）'
 

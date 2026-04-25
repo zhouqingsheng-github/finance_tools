@@ -157,7 +157,7 @@ class BrowserAutomationEngine:
                         logger.warning(f'[Listener #{li_idx}] 缺少 api_url，跳过')
                         continue
 
-                    # ---- 2a: 执行操作（action）----
+                    # ---- 2a: 准备触发动作（真正执行放到监听器挂好之后，避免漏抓请求）----
                     action_type = l_action.get('type', 'immediate')
                     action_selector = l_action.get('selector', '')
 
@@ -170,30 +170,15 @@ class BrowserAutomationEngine:
                         self.emit_event('task:log', {
                             'taskId': task_id, 'merchantId': merchant_id,
                             'log': {'level': 'info',
-                                    'message': f'🖱️ [步骤 {li_idx + 1}] 点击 [{action_selector}] 后开始监听: {l_api_url}',
+                                    'message': f'🖱️ [步骤 {li_idx + 1}] 监听就绪后点击 [{action_selector}]: {l_api_url}',
                                     'timestamp': time.time()}
                         })
-                        try:
-                            locator = page.locator(action_selector).first
-                            await locator.wait_for(state='visible', timeout=10000)
-                            await locator.scroll_into_view_if_needed()
-                            await asyncio.sleep(0.3)
-                            await locator.click()
-                            await asyncio.sleep(1.5)  # 等待点击后请求发出
-                        except Exception as e:
-                            logger.warning(f'[Listener {li_idx}] click action failed: {e}')
-                            self.emit_event('task:log', {
-                                'taskId': task_id, 'merchantId': merchant_id,
-                                'log': {'level': 'warn',
-                                        'message': f'⚠️ [步骤 {li_idx + 1}] 点击失败: {e}',
-                                        'timestamp': time.time()}
-                            })
                     else:
                         # immediate 模式：直接开始监听
                         self.emit_event('task:log', {
                             'taskId': task_id, 'merchantId': merchant_id,
                             'log': {'level': 'info',
-                                    'message': f'⚡ [步骤 {li_idx + 1}] 立即监听: {listener_label}',
+                                    'message': f'⚡ [步骤 {li_idx + 1}] 监听就绪后刷新页面: {listener_label}',
                                     'timestamp': time.time()}
                         })
 
@@ -207,13 +192,18 @@ class BrowserAutomationEngine:
                     if l_mode == 'extract':
                         # ----- extract 模式：拦截响应 → 提取数据（支持分页） -----
                         l_field_mapping = listener.get('field_mapping', {}) or {}
+                        # 先采集浏览器状态快照，再按配置解析 $storage / $session / $cookie
+                        if l_field_mapping:
+                            await self._resolve_browser_state_refs(page, l_field_mapping, extracted_vars, task_id, merchant_id)
                         # 解析 $变量引用（从之前 extract 监听器的提取结果中取值）
                         resolved_fm = self._resolve_field_mapping_refs(l_field_mapping,
                                                                        extracted_vars) if l_field_mapping else None
                         records = await self._extract_from_response(
                             page, l_api_url, l_extract_cfg, l_pagination_cfg,
                             task_id, merchant_id, base_progress,
-                            field_mapping=resolved_fm
+                            field_mapping=resolved_fm,
+                            action=l_action,
+                            step_num=li_idx + 1
                         )
                         if records:
                             all_records.extend(records)
@@ -233,13 +223,32 @@ class BrowserAutomationEngine:
                     else:
                         # ----- capture 模式：拦截请求 → 生成 CURL -----
                         l_field_mapping = listener.get('field_mapping', {}) or {}
+                        # 先采集浏览器状态快照，再按配置解析 $storage / $session / $cookie
+                        if l_field_mapping:
+                            await self._resolve_browser_state_refs(page, l_field_mapping, extracted_vars, task_id, merchant_id)
                         # 解析 $变量引用（从之前 extract 监听器的提取结果中取值）
                         resolved_mapping = self._resolve_field_mapping_refs(l_field_mapping,
                                                                             extracted_vars) if l_field_mapping else {}
-                        await self._capture_api_as_curl(
+                        records = await self._capture_api_as_curl(
                             page, l_api_url, task_id, merchant_id,
-                            field_mapping=resolved_mapping if resolved_mapping else None
+                            field_mapping=resolved_mapping if resolved_mapping else None,
+                            extract_config=l_extract_cfg,
+                            pagination_config=l_pagination_cfg,
+                            action=l_action,
+                            step_num=li_idx + 1
                         )
+                        if records:
+                            all_records.extend(records)
+                            self.emit_event('task:log', {
+                                'taskId': task_id, 'merchantId': merchant_id,
+                                'log': {'level': 'info',
+                                        'message': f'📊 [{li_idx + 1}] CURL 重放提取到 {len(records)} 条数据',
+                                        'timestamp': time.time()}
+                            })
+                            if records[0]:
+                                extracted_vars.update(
+                                    {k: v for k, v in records[0].items() if v is not None and v != ''})
+                                logger.info(f'[Listener #{li_idx}] extracted_vars updated from capture replay')
 
                 collected_count = len(all_records)
 
@@ -349,6 +358,511 @@ class BrowserAutomationEngine:
             })
 
     @staticmethod
+    def _normalize_storage_ref(value: str) -> str:
+        """容错清理 storage/session 引用里的空格，如 value. partnerId -> value.partnerId。"""
+        if not isinstance(value, str):
+            return value
+        import re as _re
+        value = _re.sub(r'(\$(?:storage|session):\S+)\s+\.\s*', r'\1.', value)
+        value = _re.sub(r'(\$(?:storage|session):\S+\.)\s+', r'\1', value)
+        return value
+
+    @staticmethod
+    def _parse_storage_ref(ref: str):
+        """
+        解析 storage/session 引用。
+        格式：
+          $storage:key.path
+          $storage:https://host:key.path
+        """
+        if not isinstance(ref, str) or not ref.startswith('$'):
+            return None
+        import re as _re
+        normalized = BrowserAutomationEngine._normalize_storage_ref(ref.strip())
+        match = _re.match(r'^\$(storage|session):(.+)$', normalized)
+        if not match:
+            return None
+        storage_type = match.group(1)
+        rest = match.group(2).strip()
+        origin = ''
+        if rest.startswith('http://') or rest.startswith('https://'):
+            origin_match = _re.match(r'^(https?://[^:\s]+):(.*)$', rest)
+            if not origin_match:
+                return None
+            origin = origin_match.group(1).rstrip('/')
+            path_str = origin_match.group(2).strip()
+        else:
+            path_str = rest
+        path_str = _re.sub(r'\s*\.\s*', '.', path_str)
+        parts = path_str.split('.', 1)
+        storage_key = parts[0].strip()
+        json_path = parts[1].strip() if len(parts) > 1 else ''
+        if not storage_key:
+            return None
+        return {
+            'storage_type': storage_type,
+            'origin': origin,
+            'storage_key': storage_key,
+            'json_path': json_path,
+            'full_ref': normalized,
+        }
+
+    @staticmethod
+    def _parse_cookie_ref(ref: str):
+        """
+        解析 cookie 引用。
+        格式：
+          $cookie:name
+          $cookie:https://host:name
+        """
+        if not isinstance(ref, str) or not ref.startswith('$cookie:'):
+            return None
+        import re as _re
+        normalized = ref.strip()
+        rest = normalized[len('$cookie:'):].strip()
+        origin = ''
+        if rest.startswith('http://') or rest.startswith('https://'):
+            origin_match = _re.match(r'^(https?://[^:\s]+):(.*)$', rest)
+            if not origin_match:
+                return None
+            origin = origin_match.group(1).rstrip('/')
+            cookie_name = origin_match.group(2).strip()
+        else:
+            cookie_name = rest
+        if not cookie_name:
+            return None
+        return {
+            'origin': origin,
+            'cookie_name': cookie_name,
+            'full_ref': normalized,
+        }
+
+    @staticmethod
+    def _get_storage_json_path_value(raw: any, json_path: str):
+        """读取 storage JSON 路径，遇到嵌套 JSON 字符串会自动继续解析。"""
+        if not json_path:
+            return raw
+
+        current = raw
+        for segment in [p for p in json_path.split('.') if p]:
+            if isinstance(current, str):
+                text = current.strip()
+                if (text.startswith('{') and text.endswith('}')) or (text.startswith('[') and text.endswith(']')):
+                    current = json.loads(text)
+            current = BrowserAutomationEngine._get_path_value(current, segment, None)
+            if current is None:
+                return None
+        return current
+
+    async def _collect_browser_state(self, page: Page, task_id: str = '', merchant_id: str = '') -> dict:
+        """一次性采集当前浏览器上下文中的 cookies、所有 frame 的 localStorage/sessionStorage。"""
+        from urllib.parse import urlparse
+
+        def frame_origin(frame) -> str:
+            try:
+                parsed = urlparse(frame.url)
+                if parsed.scheme and parsed.netloc:
+                    return f'{parsed.scheme}://{parsed.netloc}'
+            except Exception:
+                pass
+            return ''
+
+        state = {
+            'cookies': [],
+            'frames': [],
+        }
+
+        try:
+            state['cookies'] = await page.context.cookies()
+        except Exception as e:
+            logger.warning(f'[BrowserState] 读取 cookies 失败: {e}')
+
+        for frame in page.frames:
+            origin = frame_origin(frame)
+            if not origin:
+                continue
+            try:
+                frame_state = await frame.evaluate('''() => {
+                    const dump = (store) => {
+                        const data = {};
+                        for (let i = 0; i < store.length; i++) {
+                            const key = store.key(i);
+                            data[key] = store.getItem(key);
+                        }
+                        return data;
+                    };
+                    return {
+                        href: location.href,
+                        origin: location.origin,
+                        localStorage: dump(localStorage),
+                        sessionStorage: dump(sessionStorage)
+                    };
+                }''')
+                state['frames'].append(frame_state)
+            except Exception as e:
+                logger.warning(f'[BrowserState] 读取 frame storage 失败 origin={origin}: {e}')
+
+        cookie_names = sorted({c.get('name', '') for c in state['cookies'] if c.get('name')})
+        frame_summaries = [
+            {
+                'origin': f.get('origin'),
+                'localKeys': list((f.get('localStorage') or {}).keys())[:20],
+                'sessionKeys': list((f.get('sessionStorage') or {}).keys())[:20],
+            }
+            for f in state['frames']
+        ]
+        msg = f'[BrowserState] cookies={cookie_names[:30]} frames={frame_summaries}'
+        logger.info(msg)
+        if task_id:
+            self.emit_event('task:log', {
+                'taskId': task_id,
+                'merchantId': merchant_id,
+                'log': {'level': 'debug', 'message': msg, 'timestamp': time.time()}
+            })
+
+        return state
+
+    async def _resolve_browser_state_refs(self, page: Page, field_mapping: dict, extracted_vars: dict,
+                                          task_id: str = '', merchant_id: str = '') -> None:
+        """先采集浏览器状态快照，再按配置解析 storage/session/cookie 引用。"""
+        browser_state = await self._collect_browser_state(page, task_id, merchant_id)
+
+        from urllib.parse import urlparse
+
+        def cookie_matches_origin(cookie: dict, origin: str) -> bool:
+            if not origin:
+                return True
+            host = urlparse(origin).hostname or ''
+            domain = (cookie.get('domain') or '').lstrip('.')
+            return bool(host and domain and (host == domain or host.endswith('.' + domain) or domain.endswith('.' + host)))
+
+        def select_frames(origin: str) -> list:
+            if not origin:
+                return browser_state['frames']
+            return [f for f in browser_state['frames'] if f.get('origin') == origin.rstrip('/')]
+
+        for fm_key, ref_value in field_mapping.items():
+            if not isinstance(ref_value, str):
+                continue
+
+            storage_ref = BrowserAutomationEngine._parse_storage_ref(ref_value)
+            if storage_ref:
+                stype = storage_ref['storage_type']
+                storage_key = storage_ref['storage_key']
+                json_path = storage_ref['json_path']
+                origin = storage_ref['origin']
+                store_name = 'localStorage' if stype == 'storage' else 'sessionStorage'
+                raw = None
+                source_origin = ''
+                candidate_frames = select_frames(origin)
+                if origin and not candidate_frames:
+                    msg = f'[BrowserState] origin={origin} 未匹配到 frame，改为按 key={storage_key} 在所有 frame 中查找'
+                    logger.warning(msg)
+                    if task_id:
+                        self.emit_event('task:log', {
+                            'taskId': task_id,
+                            'merchantId': merchant_id,
+                            'log': {'level': 'warn', 'message': msg, 'timestamp': time.time()}
+                        })
+                    candidate_frames = browser_state['frames']
+
+                for frame_state in candidate_frames:
+                    store = frame_state.get(store_name) or {}
+                    if storage_key in store:
+                        raw = store.get(storage_key)
+                        source_origin = frame_state.get('origin', '')
+                        break
+
+                if raw is None and origin:
+                    msg = f'[BrowserState] origin={origin} 下未找到 key={storage_key}，改为按 key 在所有 frame 中兜底查找'
+                    logger.warning(msg)
+                    if task_id:
+                        self.emit_event('task:log', {
+                            'taskId': task_id,
+                            'merchantId': merchant_id,
+                            'log': {'level': 'warn', 'message': msg, 'timestamp': time.time()}
+                        })
+                    for frame_state in browser_state['frames']:
+                        store = frame_state.get(store_name) or {}
+                        if storage_key in store:
+                            raw = store.get(storage_key)
+                            source_origin = frame_state.get('origin', '')
+                            break
+
+                if raw is None:
+                    msg = f'[BrowserState] 未找到 {storage_ref["full_ref"]}，字段={fm_key}'
+                    logger.warning(msg)
+                    if task_id:
+                        self.emit_event('task:log', {
+                            'taskId': task_id,
+                            'merchantId': merchant_id,
+                            'log': {'level': 'warn', 'message': msg, 'timestamp': time.time()}
+                        })
+                    continue
+
+                raw_preview = raw[:500] if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)[:500]
+                raw_msg = (
+                    f'[BrowserState] 命中 {store_name} key={storage_key} @ {source_origin}, '
+                    f'value_len={len(raw or "")}, value_preview={raw_preview}'
+                )
+                logger.info(raw_msg)
+                if task_id:
+                    self.emit_event('task:log', {
+                        'taskId': task_id,
+                        'merchantId': merchant_id,
+                        'log': {'level': 'debug', 'message': raw_msg, 'timestamp': time.time()}
+                    })
+
+                try:
+                    value = raw
+                    if json_path:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        value = BrowserAutomationEngine._get_storage_json_path_value(parsed, json_path)
+                    value = '' if value is None else str(value)
+                except Exception as e:
+                    msg = f'[BrowserState] 解析 {storage_ref["full_ref"]} 失败: {e}'
+                    logger.warning(msg)
+                    value = ''
+
+                import re as _re
+                var_name = _re.split(r'\.', json_path)[-1] if json_path else storage_key
+                arr_match = _re.match(r'(\w+)', var_name)
+                if arr_match:
+                    var_name = arr_match.group(1)
+                extracted_vars[fm_key] = value
+                extracted_vars[var_name] = value
+                extracted_vars[storage_ref['full_ref']] = value
+                msg = f'[BrowserState] {storage_ref["full_ref"]} @ {source_origin} -> {var_name}=len({len(value)})'
+                logger.info(msg)
+                if task_id:
+                    self.emit_event('task:log', {
+                        'taskId': task_id,
+                        'merchantId': merchant_id,
+                        'log': {'level': 'debug', 'message': msg, 'timestamp': time.time()}
+                    })
+                continue
+
+            cookie_ref = BrowserAutomationEngine._parse_cookie_ref(ref_value)
+            if cookie_ref:
+                cookie_name = cookie_ref['cookie_name']
+                origin = cookie_ref['origin']
+                matched = [
+                    c for c in browser_state['cookies']
+                    if c.get('name') == cookie_name and cookie_matches_origin(c, origin)
+                ]
+                value = matched[0].get('value', '') if matched else ''
+                extracted_vars[fm_key] = value
+                extracted_vars[cookie_name] = value
+                extracted_vars[cookie_ref['full_ref']] = value
+                msg = f'[BrowserState] {cookie_ref["full_ref"]} -> {cookie_name}=len({len(value)}) origin={origin or "*"}'
+                logger.info(msg)
+                if task_id:
+                    self.emit_event('task:log', {
+                        'taskId': task_id,
+                        'merchantId': merchant_id,
+                        'log': {'level': 'debug' if value else 'warn', 'message': msg, 'timestamp': time.time()}
+                    })
+
+    async def _resolve_storage_refs(self, page: Page, field_mapping: dict, extracted_vars: dict,
+                                    task_id: str = '', merchant_id: str = '') -> None:
+        """
+        扫描 field_mapping 中的 $storage: / $session: 引用，从浏览器 storage 读取值后注入 extracted_vars。
+
+        支持格式：
+          - $storage:tokenKey              → 当前页面 localStorage.getItem('tokenKey')
+          - $storage:authInfo.access_token → localStorage 取值后 JSON 解析，按路径取 access_token
+          - $session:cartData.items[0].id  → sessionStorage 同理，支持数组索引
+          - $storage:https://tpt.meituan.com:authInfo.token → 指定域名的 localStorage（跨域）
+          - $session:https://me.meituan.com:sid               指定域名的 sessionStorage（跨域）
+
+        跨域读取会临时打开同源页面读取，读完立即关闭。
+        读取后的值会以最后一段路径为 key 存入 extracted_vars，供 _resolve_field_mapping_refs 使用。
+        """
+        # 收集所有需要读取的 storage 引用
+        # 按 (storage_type, origin, storage_key) 分组
+        storage_reads = {}  # {(type, origin, key): [(fm_key, full_ref, json_path)]}
+        for fm_key, value in field_mapping.items():
+            if not isinstance(value, str):
+                continue
+            parsed_ref = BrowserAutomationEngine._parse_storage_ref(value)
+            if not parsed_ref:
+                continue
+            read_key = (
+                parsed_ref['storage_type'],
+                parsed_ref['origin'],
+                parsed_ref['storage_key']
+            )
+            if read_key not in storage_reads:
+                storage_reads[read_key] = []
+            storage_reads[read_key].append((fm_key, parsed_ref['full_ref'], parsed_ref['json_path']))
+
+        if not storage_reads:
+            return
+
+        raw_values = {}
+
+        def frame_origin(frame) -> str:
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(frame.url)
+                if parsed.scheme and parsed.netloc:
+                    return f'{parsed.scheme}://{parsed.netloc}'
+            except Exception:
+                pass
+            return ''
+
+        async def read_frame_storage(frame, stype: str, sk: str):
+            return await frame.evaluate('''(config) => {
+                const localKeys = Object.keys(localStorage);
+                const sessionKeys = Object.keys(sessionStorage);
+                const store = config.isLocal ? localStorage : sessionStorage;
+                return {
+                    value: store.getItem(config.key),
+                    localKeys,
+                    sessionKeys,
+                    href: location.href,
+                    origin: location.origin
+                };
+            }''', {'isLocal': stype == 'storage', 'key': sk})
+
+        for (stype, origin, sk), refs in storage_reads.items():
+            lookup_key = f'{stype}:{sk}'
+            target_origin = origin.rstrip('/') if origin else ''
+            frames = [f for f in page.frames if frame_origin(f)]
+            if target_origin:
+                candidates = [f for f in frames if frame_origin(f) == target_origin]
+            else:
+                candidates = frames
+
+            for frame in candidates:
+                try:
+                    result = await read_frame_storage(frame, stype, sk)
+                    msg = (
+                        f'[StorageResolve] frame={result.get("origin")} key={stype}:{sk} '
+                        f'value_len={len(result.get("value") or "")} '
+                        f'localKeys={result.get("localKeys", [])[:20]} '
+                        f'sessionKeys={result.get("sessionKeys", [])[:20]}'
+                    )
+                    logger.info(msg)
+                    if task_id:
+                        self.emit_event('task:log', {
+                            'taskId': task_id,
+                            'merchantId': merchant_id,
+                            'log': {'level': 'debug', 'message': msg, 'timestamp': time.time()}
+                        })
+                    if result.get('value') is not None:
+                        raw_values[lookup_key] = result.get('value')
+                        break
+                except Exception as e:
+                    logger.warning(f'[StorageResolve] frame 读取失败 origin={frame_origin(frame)} key={stype}:{sk}: {e}')
+
+            # localStorage 可以用同 browser context 临时打开 origin 兜底；sessionStorage 不共享，兜底意义不大。
+            if lookup_key not in raw_values and target_origin and stype == 'storage':
+                temp_page = None
+                try:
+                    temp_page = await page.context.new_page()
+                    await temp_page.goto(target_origin, wait_until='domcontentloaded', timeout=10000)
+                    result = await read_frame_storage(temp_page.main_frame, stype, sk)
+                    raw_values[lookup_key] = result.get('value')
+                    msg = (
+                        f'[StorageResolve] fallback origin={target_origin} key={stype}:{sk} '
+                        f'value_len={len(result.get("value") or "")} '
+                        f'localKeys={result.get("localKeys", [])[:20]}'
+                    )
+                    logger.info(msg)
+                    if task_id:
+                        self.emit_event('task:log', {
+                            'taskId': task_id,
+                            'merchantId': merchant_id,
+                            'log': {'level': 'debug', 'message': msg, 'timestamp': time.time()}
+                        })
+                except Exception as e:
+                    logger.warning(f'[StorageResolve] fallback 读取失败 origin={target_origin} key={stype}:{sk}: {e}')
+                finally:
+                    if temp_page:
+                        await temp_page.close()
+
+        # 解析每个引用，提取值并注入 extracted_vars
+        for (storage_type, origin, storage_key), refs in storage_reads.items():
+            lookup_key = f'{storage_type}:{storage_key}'
+            raw = raw_values.get(lookup_key)
+            if raw is None:
+                logger.warning(f'[StorageResolve] {lookup_key} 不存在{(" (" + origin + ")") if origin else ""}，请核对 Application 中的 origin 和 key')
+                continue
+
+            for fm_key, full_ref, json_path in refs:
+                value = raw
+                if json_path:
+                    # 尝试 JSON 解析后按路径取值
+                    try:
+                        parsed = json.loads(raw) if isinstance(raw, str) else raw
+                        parsed = BrowserAutomationEngine._get_storage_json_path_value(parsed, json_path)
+                        value = str(parsed) if parsed is not None else ''
+                    except (json.JSONDecodeError, KeyError, TypeError, IndexError) as e:
+                        logger.warning(f'[StorageResolve] 解析 {full_ref} 路径失败: {e}')
+                        value = ''
+                # 提取变量名：路径最后一段
+                import re as _re
+                var_name = _re.split(r'\.', json_path)[-1] if json_path else storage_key
+                # 清理数组索引
+                arr_match = _re.match(r'(\w+)', var_name)
+                if arr_match:
+                    var_name = arr_match.group(1)
+                extracted_vars[var_name] = value
+                logger.info(f'[StorageResolve] {full_ref} → {var_name}={value[:80]}')
+
+    async def _resolve_cookie_refs(self, page: Page, field_mapping: dict, extracted_vars: dict,
+                                   task_id: str = '', merchant_id: str = '') -> None:
+        """读取 $cookie:name / $cookie:https://host:name 并注入 extracted_vars。"""
+        cookie_refs = []
+        for fm_key, value in field_mapping.items():
+            parsed_ref = BrowserAutomationEngine._parse_cookie_ref(value) if isinstance(value, str) else None
+            if parsed_ref:
+                cookie_refs.append(parsed_ref)
+
+        if not cookie_refs:
+            return
+
+        try:
+            all_cookies = await page.context.cookies()
+        except Exception as e:
+            logger.warning(f'[CookieResolve] 读取 cookies 失败: {e}')
+            return
+
+        from urllib.parse import urlparse
+
+        def cookie_matches_origin(cookie: dict, origin: str) -> bool:
+            if not origin:
+                return True
+            host = urlparse(origin).hostname or ''
+            domain = (cookie.get('domain') or '').lstrip('.')
+            return bool(host and domain and (host == domain or host.endswith('.' + domain) or domain.endswith('.' + host)))
+
+        available_names = sorted({c.get('name', '') for c in all_cookies if c.get('name')})
+        for ref in cookie_refs:
+            cookie_name = ref['cookie_name']
+            origin = ref['origin']
+            matched = [
+                c for c in all_cookies
+                if c.get('name') == cookie_name and cookie_matches_origin(c, origin)
+            ]
+            value = matched[0].get('value', '') if matched else ''
+            extracted_vars[cookie_name] = value
+
+            msg = (
+                f'[CookieResolve] {ref["full_ref"]} → {cookie_name} '
+                f'value_len={len(value)} origin={origin or "*"} '
+                f'available={available_names[:30]}'
+            )
+            logger.info(msg)
+            if task_id:
+                self.emit_event('task:log', {
+                    'taskId': task_id,
+                    'merchantId': merchant_id,
+                    'log': {'level': 'debug' if value else 'warn', 'message': msg, 'timestamp': time.time()}
+                })
+
+    @staticmethod
     def _resolve_field_mapping_refs(field_mapping: dict, extracted_vars: dict) -> dict:
         """
         解析 field_mapping 值中的 $变量引用。
@@ -357,31 +871,61 @@ class BrowserAutomationEngine:
         支持格式：
           - $partnerId       → 直接取 extracted_vars["partnerId"]
           - ${partnerId}     → 同上（大括号可选）
+          - $storage:xxx     → 已由 _resolve_storage_refs 预处理到 extracted_vars 中
           - prefix$partnerId → 保留前缀，仅替换 $ 引用部分
 
         Args:
             field_mapping: 原始参数映射 {参数名: 值}
-            extracted_vars: 跨监听器共享的提取变量字典
+            extracted_vars: 跨监听器共享的提取变量字典（含 storage 预读取值）
 
         Returns:
             解析后的新 mapping 字典
         """
-        import re as _re
         resolved = {}
         for key, value in field_mapping.items():
-            if isinstance(value, str) and value.startswith('$'):
-                # 提取引用名：去掉 $ 或 ${...} 包裹
+            if not isinstance(value, str):
+                resolved[key] = value
+                continue
+
+            # 处理 $storage: / $session: 引用（可能是值的一部分或全部）
+            parsed_ref = BrowserAutomationEngine._parse_storage_ref(value)
+            if parsed_ref:
+                import re as _re
+                json_path = parsed_ref['json_path']
+                var_name = _re.split(r'\.', json_path)[-1] if json_path else parsed_ref['storage_key']
+                arr_match = _re.match(r'(\w+)', var_name)
+                if arr_match:
+                    var_name = arr_match.group(1)
+                resolved[key] = (
+                    extracted_vars.get(key)
+                    or extracted_vars.get(parsed_ref['full_ref'])
+                    or extracted_vars.get(var_name)
+                    or parsed_ref['full_ref']
+                )
+                continue
+
+            parsed_cookie = BrowserAutomationEngine._parse_cookie_ref(value)
+            if parsed_cookie:
+                cookie_name = parsed_cookie['cookie_name']
+                resolved[key] = (
+                    extracted_vars.get(key)
+                    or extracted_vars.get(parsed_cookie['full_ref'])
+                    or extracted_vars.get(cookie_name)
+                    or parsed_cookie['full_ref']
+                )
+                continue
+
+            # 处理普通 $变量引用
+            if value.startswith('$'):
                 ref_name = value
                 if ref_name.startswith('${') and ref_name.endswith('}'):
                     ref_name = ref_name[2:-1]
                 elif ref_name.startswith('$'):
                     ref_name = ref_name[1:]
-                # 从共享变量中取值
                 if ref_name and ref_name in extracted_vars:
                     resolved[key] = extracted_vars[ref_name]
                     logger.info(f'[RefResolve] {key}: ${ref_name} → {extracted_vars[ref_name]}')
                 else:
-                    # 找不到引用变量，保留原值并警告
                     resolved[key] = value
                     logger.warning(f'[RefResolve] ${ref_name} not found in extracted_vars, keeping original')
             else:
@@ -406,15 +950,24 @@ class BrowserAutomationEngine:
 
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
+        clean_mapping = {}
+        for key, value in field_mapping.items():
+            if isinstance(value, str) and value.startswith(('$storage:', '$session:', '$cookie:')):
+                logger.warning(f'[FieldMapping] 动态参数 [{key}] 未解析成功，跳过写入: {value}')
+                continue
+            clean_mapping[key] = value
+
         # ---- 1. 替换 URL query 参数 ----
         parsed = urlparse(url)
         params = parse_qs(parsed.query, keep_blank_values=True)
         changed = False
-        for key, new_val in field_mapping.items():
+        applied_keys = set()
+        for key, new_val in clean_mapping.items():
             if key in params:
                 old_val = params[key]
                 params[key] = [str(new_val)]
                 changed = True
+                applied_keys.add(key)
                 logger.info(f'[FieldMapping] URL param [{key}]: {old_val} → {new_val}')
         if changed:
             flat = {}
@@ -428,34 +981,20 @@ class BrowserAutomationEngine:
             try:
                 # 尝试 JSON body
                 body_obj = json.loads(post_data) if isinstance(post_data, str) else post_data
-                if isinstance(body_obj, dict):
+                if isinstance(body_obj, (dict, list)):
                     body_changed = False
-                    for key, new_val in field_mapping.items():
-                        if key in body_obj:
-                            old_val = body_obj[key]
-                            body_obj[key] = new_val
+                    for key, new_val in clean_mapping.items():
+                        old_val = self._find_path_value(body_obj, key, None)
+                        if self._set_path_value(body_obj, key, new_val):
                             body_changed = True
+                            applied_keys.add(key)
                             logger.info(f'[FieldMapping] Body param [{key}]: {old_val} → {new_val}')
                     if body_changed:
-                        post_data = json.dumps(body_obj, ensure_ascii=False)
-                elif isinstance(body_obj, list) and len(body_obj) > 0 and isinstance(body_obj[0], dict):
-                    # 数组中第一个对象（如 {"key": "startDate", "value": "xxx"} 格式）
-                    item_changed = False
-                    for item in body_obj:
-                        if not isinstance(item, dict):
-                            continue
-                        for key, new_val in field_mapping.items():
-                            if key in item:
-                                old_val = item[key]
-                                item[key] = new_val
-                                item_changed = True
-                                logger.info(f'[FieldMapping] Body[0] param [{key}]: {old_val} → {new_val}')
-                    if item_changed:
                         post_data = json.dumps(body_obj, ensure_ascii=False)
             except (json.JSONDecodeError, TypeError):
                 # 非JSON body（form-urlencoded 等）：尝试字符串替换
                 body_changed = False
-                for key, new_val in field_mapping.items():
+                for key, new_val in clean_mapping.items():
                     import re as _re
                     # 匹配 key=value 或 key=value& 模式
                     pattern = _re.compile(r'(' + _re.escape(key) + r'=)[^&]*')
@@ -465,25 +1004,228 @@ class BrowserAutomationEngine:
                         new_kv = f'{key}={str(new_val)}'
                         post_data = pattern.sub(new_kv, post_data, count=1)
                         body_changed = True
+                        applied_keys.add(key)
                         logger.info(f'[FieldMapping] Form param [{key}]: {old_kv} → {new_kv}')
+
+        missing_keys = [key for key in clean_mapping.keys() if key not in applied_keys]
+        if missing_keys:
+            logger.warning(f'[FieldMapping] 未在 URL/body 中找到这些动态参数: {missing_keys}')
 
         return url, post_data
 
+    async def _trigger_listener_action(self, page: Page, action: dict,
+                                       task_id: str, merchant_id: str,
+                                       step_num: int):
+        """在网络监听器挂好后触发页面动作，避免请求先发生、监听后开始。"""
+        action = action or {'type': 'immediate'}
+        action_type = action.get('type', 'immediate')
+        selector = action.get('selector', '')
+
+        try:
+            if action_type == 'click' and selector:
+                locator = await self._find_clickable_locator(page, selector, timeout_ms=10000)
+                if locator is None:
+                    raise Exception(f'未找到可见元素: {selector}')
+                await locator.scroll_into_view_if_needed()
+                await asyncio.sleep(0.3)
+                await locator.click()
+                return
+
+            # immediate 模式用于抓首屏接口：监听器已挂好后刷新页面，让接口重新发出。
+            await page.reload(wait_until='domcontentloaded', timeout=60000)
+            await asyncio.sleep(1.0)
+        except Exception as e:
+            logger.warning(f'[ListenerAction] step={step_num}, type={action_type}, selector={selector} failed: {e}')
+            self.emit_event('task:log', {
+                'taskId': task_id, 'merchantId': merchant_id,
+                'log': {'level': 'warn',
+                        'message': f'⚠️ [步骤 {step_num}] 触发动作失败: {e}',
+                        'timestamp': time.time()}
+            })
+
+    async def _find_clickable_locator(self, page: Page, selector: str, timeout_ms: int = 10000):
+        """在主页面和所有 iframe 中查找可见元素。"""
+        deadline = time.time() + timeout_ms / 1000
+        last_frame_urls: list[str] = []
+
+        while time.time() < deadline:
+            frames = page.frames
+            last_frame_urls = [f.url for f in frames if f.url and f.url != 'about:blank']
+
+            for frame in frames:
+                try:
+                    locator = frame.locator(selector).first
+                    if await locator.count() > 0 and await locator.is_visible(timeout=500):
+                        logger.info(f'[ListenerAction] selector found in frame: {frame.url}')
+                        return locator
+                except Exception:
+                    continue
+
+            await asyncio.sleep(0.3)
+
+        logger.warning(f'[ListenerAction] selector not visible: {selector}; frames={last_frame_urls[:8]}')
+        return None
+
+    @staticmethod
+    def _get_request_post_data(request) -> str:
+        """兼容不同 Playwright 版本读取 request.post_data。"""
+        try:
+            post_data = getattr(request, 'post_data', '')
+            if callable(post_data):
+                post_data = post_data()
+            return post_data or ''
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _clean_fetch_headers(headers: dict) -> dict:
+        """清理浏览器 fetch 不能或不应手动设置的请求头。"""
+        skip_headers = {
+            'host', 'cookie', 'content-length', 'accept-encoding', 'connection',
+            'user-agent', 'referer', 'origin',
+            'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+            'sec-fetch-dest', 'sec-fetch-mode', 'sec-fetch-site',
+            'upgrade-insecure-requests',
+        }
+        return {
+            k: v for k, v in (headers or {}).items()
+            if k and k.lower().strip() not in skip_headers and v is not None
+        }
+
+    async def _replay_captured_request(self, page: Page, req_info: dict,
+                                       task_id: str, merchant_id: str) -> dict:
+        """在当前浏览器上下文中重放抓到的请求，并返回响应文本。"""
+        method = (req_info.get('method') or 'GET').upper()
+        headers = self._clean_fetch_headers(req_info.get('headers', {}))
+        body = req_info.get('post_data') or ''
+        fetch_options = {
+            'method': method,
+            'headers': headers,
+            'credentials': 'include',
+        }
+        if body and method in ('POST', 'PUT', 'PATCH'):
+            fetch_options['body'] = body
+
+        self.emit_event('task:log', {
+            'taskId': task_id, 'merchantId': merchant_id,
+            'log': {'level': 'info',
+                    'message': f'🚀 使用抓到的 CURL 配置发起业务请求: {method} {req_info.get("url", "")[:120]}',
+                    'timestamp': time.time()}
+        })
+
+        eval_target = req_info.get('_frame') or page
+        result = await eval_target.evaluate('''async ({ url, options }) => {
+            const response = await fetch(url, options);
+            const text = await response.text();
+            return {
+                status: response.status,
+                ok: response.ok,
+                contentType: response.headers.get('content-type') || '',
+                body: text
+            };
+        }''', {'url': req_info.get('url', ''), 'options': fetch_options})
+
+        self.emit_event('task:log', {
+            'taskId': task_id, 'merchantId': merchant_id,
+            'log': {'level': 'info' if result.get('ok') else 'warn',
+                    'message': f'HTTP {result.get("status")} | {len(result.get("body") or "")} bytes | Content-Type: {result.get("contentType", "")}',
+                    'timestamp': time.time()}
+        })
+
+        if not result.get('ok'):
+            raise Exception(f'业务请求失败 HTTP {result.get("status")}: {(result.get("body") or "")[:200]}')
+
+        return result
+
+    async def _replay_paginated_captured_request(self, page: Page, base_request: dict,
+                                                first_body: str, extract_config: dict,
+                                                pagination_config: dict,
+                                                task_id: str, merchant_id: str) -> list[dict]:
+        """基于抓到的请求继续重放分页，返回第 2 页及之后的数据。"""
+        records: list[dict] = []
+        page_field = pagination_config.get('page_field') or 'page'
+        size_field = pagination_config.get('size_field') or 'pageSize'
+        total_field = pagination_config.get('total_field') or ''
+        is_total_page = pagination_config.get('is_total_page', False)
+
+        total_value = 0
+        if total_field:
+            try:
+                first_json = json.loads(first_body) if isinstance(first_body, str) else first_body
+                total_value = int(self._find_path_value(first_json, total_field, 0) or 0)
+            except Exception as e:
+                logger.warning(f'[CaptureReplay] 解析 total_field 失败: {e}')
+
+        page_size = self._get_page_size_from_request(base_request, size_field)
+        if is_total_page and total_value > 0:
+            total_pages = total_value
+        elif total_value > 0:
+            total_pages = max((total_value + page_size - 1) // page_size, 1)
+        else:
+            total_pages = pagination_config.get('max_pages') or 50
+
+        self.emit_event('task:log', {
+            'taskId': task_id, 'merchantId': merchant_id,
+            'log': {'level': 'info',
+                    'message': f'📄 CURL 分页执行: page_field={page_field}, pageSize={page_size}, 目标页数={total_pages}',
+                    'timestamp': time.time()}
+        })
+
+        for page_num in range(2, int(total_pages) + 1):
+            next_request = {
+                **base_request,
+                'url': base_request.get('url', ''),
+                'post_data': base_request.get('post_data', ''),
+            }
+            next_url, next_body = self._set_request_page(next_request['url'], next_request['post_data'],
+                                                         page_field, page_num)
+            next_request['url'] = next_url
+            next_request['post_data'] = next_body
+
+            self.emit_event('task:progress', {
+                'taskId': task_id, 'merchantId': merchant_id,
+                'status': 'running',
+                'progress': min(70 + int(25 * page_num / max(total_pages, page_num)), 94),
+                'message': f'正在执行 CURL 第 {page_num}/{total_pages} 页... ({len(records)}条)'
+            })
+
+            try:
+                result = await self._replay_captured_request(page, next_request, task_id, merchant_id)
+                page_records = await self._extract_from_json(result.get('body', ''), extract_config, task_id, merchant_id)
+                if not page_records:
+                    logger.info(f'[CaptureReplay] 第{page_num}页无数据，停止分页')
+                    break
+                records.extend(page_records)
+            except Exception as e:
+                logger.warning(f'[CaptureReplay] 第{page_num}页请求失败: {e}')
+                break
+
+            await asyncio.sleep(0.3)
+
+        self.emit_event('task:log', {
+            'taskId': task_id, 'merchantId': merchant_id,
+            'log': {'level': 'info',
+                    'message': f'📊 CURL 分页完成: 后续页提取 {len(records)} 条数据',
+                    'timestamp': time.time()}
+        })
+        return records
+
     async def _capture_api_as_curl(self, page: Page, api_url: str,
                                    task_id: str, merchant_id: str,
-                                   field_mapping: dict | None = None):
+                                   field_mapping: dict | None = None,
+                                   extract_config: dict | None = None,
+                                   pagination_config: dict | None = None,
+                                   action: dict | None = None,
+                                   step_num: int = 1):
         """
-        接口监听模式：打开页面 → 自动抓包 → 生成 CURL 命令
-
-        纯抓包用途，不提取数据、不执行按钮操作。
-        生成的 curl 命令通过 browser:curl-captured 事件发送给前端，
-        用户可复制后创建 HTTP(CURL) 模式任务来执行。
+        接口监听模式：打开页面 → 自动抓包 → 生成 CURL 命令 → 自动重放请求并提取数据
 
         特殊处理：
         - 自动从浏览器上下文提取 Cookies，拼入 curl -b 参数（解决登录凭证复用）
         - 过滤无关/冗余请求头，保留业务关键头
         """
         captured_request = None
+        extracted_records: list[dict] = []
 
         def _build_curl(req_info: dict) -> str:
             """根据拦截到的请求信息组装完整 curl 命令"""
@@ -538,17 +1280,19 @@ class BrowserAutomationEngine:
                     pairs.append(f"{name}={value}")
             return '; '.join(pairs)
 
-        async def on_request(request):
+        async def on_route(route):
             nonlocal captured_request
+            request = route.request
             try:
                 url = request.url
                 if captured_request or api_url not in url:
+                    await route.continue_()
                     return
                 raw_headers = dict(request.headers.items())
                 post_data = ''
                 try:
                     if request.method in ('POST', 'PUT', 'PATCH'):
-                        post_data = (await request.post_data()) or ''
+                        post_data = self._get_request_post_data(request)
                 except Exception:
                     pass
                 captured_request = {
@@ -556,13 +1300,19 @@ class BrowserAutomationEngine:
                     'method': request.method,
                     'headers': raw_headers,
                     'post_data': post_data,
+                    '_frame': request.frame,
                 }
                 logger.info(f'[Capture] 拦截到请求: {request.method} {url} '
                             f'(headers={len(raw_headers)}, body={len(post_data)} bytes)')
+                await route.abort()
             except Exception as e:
-                logger.warning(f'[Capture] Request handler error: {e}')
+                logger.warning(f'[Capture] Route handler error: {e}')
+                try:
+                    await route.continue_()
+                except Exception:
+                    pass
 
-        page.on('request', on_request)
+        await page.route('**/*', on_route)
 
         self.emit_event('task:log', {
             'taskId': task_id, 'merchantId': merchant_id,
@@ -578,6 +1328,8 @@ class BrowserAutomationEngine:
         })
 
         try:
+            await self._trigger_listener_action(page, action or {'type': 'immediate'}, task_id, merchant_id, step_num)
+
             max_wait = 30.0
             waited = 0
             last_progress_tick = 0
@@ -624,6 +1376,26 @@ class BrowserAutomationEngine:
                     captured_request['post_data'] = new_body
                     logger.info(f'[Capture] field_mapping applied: {orig_url} → {new_url[:80]}')
 
+                # 抓包只负责生成 CURL 模板；真正采集从 CURL 模板的第 1 页重新执行。
+                extract_config = extract_config or {}
+                pagination_config = pagination_config or {}
+                if pagination_config.get('enabled'):
+                    page_field = pagination_config.get('page_field') or 'page'
+                    reset_url, reset_body = self._set_request_page(
+                        captured_request.get('url', ''),
+                        captured_request.get('post_data', ''),
+                        page_field,
+                        1
+                    )
+                    captured_request['url'] = reset_url
+                    captured_request['post_data'] = reset_body
+                    self.emit_event('task:log', {
+                        'taskId': task_id, 'merchantId': merchant_id,
+                        'log': {'level': 'info',
+                                'message': f'📌 CURL 模板已重置为第 1 页: {page_field}=1',
+                                'timestamp': time.time()}
+                    })
+
                 curl_cmd = _build_curl(captured_request)
 
                 cap_url = captured_request['url'][:120]
@@ -647,8 +1419,8 @@ class BrowserAutomationEngine:
 
                 self.emit_event('task:progress', {
                     'taskId': task_id, 'merchantId': merchant_id,
-                    'status': 'success', 'progress': 100,
-                    'message': f'CURL 命令已生成！请查看日志复制使用'
+                    'status': 'running', 'progress': 70,
+                    'message': 'CURL 已生成，正在执行业务请求...'
                 })
 
                 self.emit_event('browser:curl-captured', {
@@ -661,6 +1433,31 @@ class BrowserAutomationEngine:
                     'headers': captured_request['headers'],
                     'post_data': captured_request['post_data'],
                     'cookies': captured_request.get('cookies', ''),
+                })
+
+                # === 自动执行 CURL 模板，按提取/分页配置获取业务数据 ===
+                self.emit_event('task:log', {
+                    'taskId': task_id, 'merchantId': merchant_id,
+                    'log': {'level': 'info',
+                            'message': '🧩 抓到的请求只作为 CURL 模板，采集从该模板重新发起',
+                            'timestamp': time.time()}
+                })
+                replay_result = await self._replay_captured_request(page, captured_request, task_id, merchant_id)
+                first_body = replay_result.get('body', '')
+                first_records = await self._extract_from_json(first_body, extract_config, task_id, merchant_id)
+                extracted_records.extend(first_records)
+
+                if pagination_config.get('enabled') and first_records:
+                    page_records = await self._replay_paginated_captured_request(
+                        page, captured_request, first_body, extract_config, pagination_config,
+                        task_id, merchant_id
+                    )
+                    extracted_records.extend(page_records)
+
+                self.emit_event('task:progress', {
+                    'taskId': task_id, 'merchantId': merchant_id,
+                    'status': 'running', 'progress': 95,
+                    'message': f'CURL 执行完成，提取 {len(extracted_records)} 条数据'
                 })
             else:
                 self.emit_event('task:log', {
@@ -680,15 +1477,19 @@ class BrowserAutomationEngine:
                 })
         finally:
             try:
-                page.remove_listener('request', on_request)
+                await page.unroute('**/*', on_route)
             except Exception:
                 pass
+
+        return extracted_records
 
     async def _extract_from_response(self, page: Page, api_url: str,
                                      extract_config: dict, pagination_config: dict,
                                      task_id: str, merchant_id: str,
                                      base_progress: int = 30,
-                                     field_mapping: dict | None = None):
+                                     field_mapping: dict | None = None,
+                                     action: dict | None = None,
+                                     step_num: int = 1):
         """
         extract 模式：监听 API 响应 → 提取数据（支持自动分页）
 
@@ -710,13 +1511,15 @@ class BrowserAutomationEngine:
         """
         all_records: list[dict] = []
         captured_responses: list[dict] = []  # 存储拦截到的响应信息
+        first_request_info: dict | None = None
 
-        def _parse_and_extract(response_body: str) -> list[dict]:
+        async def _parse_and_extract(response_body: str) -> list[dict]:
             """从响应体 JSON 中提取记录"""
-            return self._extract_from_json(response_body, extract_config, task_id, merchant_id)
+            return await self._extract_from_json(response_body, extract_config, task_id, merchant_id)
 
         # --- 监听响应 ---
         async def on_response(response):
+            nonlocal first_request_info
             try:
                 url = response.url
                 if api_url not in url:
@@ -729,10 +1532,27 @@ class BrowserAutomationEngine:
                 except Exception:
                     return
                 if body:
+                    request = response.request
+                    post_data = ''
+                    try:
+                        if request.method in ('POST', 'PUT', 'PATCH'):
+                            post_data = self._get_request_post_data(request)
+                    except Exception:
+                        pass
+                    request_info = {
+                        'url': request.url,
+                        'method': request.method,
+                        'headers': dict(request.headers.items()),
+                        'post_data': post_data,
+                        '_frame': request.frame,
+                    }
+                    if first_request_info is None:
+                        first_request_info = request_info
                     captured_responses.append({
                         'url': url,
                         'status': response.status,
                         'body': body,
+                        'request': request_info,
                     })
                     logger.info(f'[Extract] 拦截到响应: {url} (status={response.status}, body={len(body)} bytes)')
             except Exception as e:
@@ -741,6 +1561,8 @@ class BrowserAutomationEngine:
         page.on('response', on_response)
 
         try:
+            await self._trigger_listener_action(page, action or {'type': 'immediate'}, task_id, merchant_id, step_num)
+
             max_wait = 30.0
             waited = 0
             last_tick = 0
@@ -770,7 +1592,7 @@ class BrowserAutomationEngine:
 
             # 处理第一个响应
             first_resp = captured_responses[0]
-            records = _parse_and_extract(first_resp['body'])
+            records = await _parse_and_extract(first_resp['body'])
             all_records.extend(records)
 
             # === 分页逻辑（无 max_pages 限制，根据 total_field 自动判断结束） ===
@@ -808,13 +1630,13 @@ class BrowserAutomationEngine:
 
                 # 计算总页数
                 target_total = 1
+                first_request = first_request_info or first_resp.get('request', {})
                 if is_total_page and total_count_or_pages > 0:
                     target_total = total_count_or_pages
                 elif total_count_or_pages > 0 and size_field:
-                    # 从首次 URL 中提取 pageSize 来计算总页数
+                    # 从首次请求 URL 或 body 中提取 pageSize 来计算总页数
                     try:
-                        first_url_parsed = self._parse_qs_from_url(first_resp['url'])
-                        page_size_val = int(first_url_parsed.get(size_field, ['20'])[0])
+                        page_size_val = self._get_page_size_from_request(first_request, size_field)
                         target_total = (total_count_or_pages + page_size_val - 1) // page_size_val
                     except Exception:
                         target_total = max(total_count_or_pages // 20, 1)
@@ -837,16 +1659,18 @@ class BrowserAutomationEngine:
 
                     # 通过 JS 触发下一页请求（应用 field_mapping）
                     try:
-                        first_url = first_resp['url']
-                        paginated_url = first_url
+                        request_info = first_request or first_resp.get('request', {})
+                        paginated_url = request_info.get('url') or first_resp['url']
+                        paginated_body = request_info.get('post_data', '')
                         if field_mapping:
-                            paginated_url, _ = await self._apply_field_mapping(
-                                first_url, '', field_mapping
+                            paginated_url, paginated_body = await self._apply_field_mapping(
+                                paginated_url, paginated_body, field_mapping
                             )
                         inject_js = self._build_pagination_fetch_js(
-                            paginated_url, page_field, size_field, pg
+                            request_info, paginated_url, paginated_body, page_field, size_field, pg
                         )
-                        await page.evaluate(inject_js)
+                        eval_target = request_info.get('_frame') or page
+                        await eval_target.evaluate(inject_js)
                         # 等待新响应
                         await asyncio.sleep(2)
                         paginated_wait = 15.0
@@ -860,7 +1684,7 @@ class BrowserAutomationEngine:
 
                     if captured_responses:
                         pg_body = captured_responses[0]['body']
-                        pg_records = _parse_and_extract(pg_body)
+                        pg_records = await _parse_and_extract(pg_body)
                         if pg_records:
                             all_records.extend(pg_records)
                             logger.info(f'[Extract] 第{pg}页提取 {len(pg_records)} 条')
@@ -894,26 +1718,166 @@ class BrowserAutomationEngine:
         parsed = urlparse(url)
         return parse_qs(parsed.query, keep_blank_values=True)
 
-    @staticmethod
-    def _build_pagination_fetch_js(url: str, page_field: str, size_field: str,
-                                   page_num: int) -> str:
-        """生成 JS 代码：用修改后的分页参数重新 fetch 接口"""
+    @classmethod
+    def _set_request_page(cls, url: str, post_data: str, page_field: str, page_num: int) -> tuple[str, str]:
+        """把页码写回 JSON body；如果 body 不是 JSON，则写 URL query。"""
         from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+        if post_data:
+            try:
+                body_obj = json.loads(post_data)
+                if cls._set_path_value(body_obj, page_field, page_num):
+                    return url, json.dumps(body_obj, ensure_ascii=False)
+            except Exception:
+                pass
+
         parsed = urlparse(url)
         params = parse_qs(parsed.query, keep_blank_values=True)
-        # 转换为单值（parse_qs 返回 list）
         flat_params = {}
         for k, v in params.items():
             flat_params[k] = v[-1] if v else ''
         if page_field:
             flat_params[page_field] = str(page_num)
-        # size_field 不再修改，保留原始 pageSize
+        new_query = urlencode(flat_params, doseq=True)
+        return urlunparse(parsed._replace(query=new_query)), post_data
+
+    @staticmethod
+    def _get_path_value(obj: any, path: str, default=None):
+        """按点号路径读取 dict/list 值。"""
+        if not path:
+            return default
+        current = obj
+        for part in path.split('.'):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+                current = current[int(part)]
+            else:
+                return default
+        return current
+
+    @classmethod
+    def _set_path_value(cls, obj: any, path: str, value: any) -> bool:
+        """优先按点号路径写入；找不到路径时递归替换同名字段。"""
+        if not isinstance(obj, (dict, list)) or not path:
+            return False
+
+        parts = [p for p in path.split('.') if p]
+        if len(parts) > 1:
+            current = obj
+            for part in parts[:-1]:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+                    current = current[int(part)]
+                else:
+                    current = None
+                    break
+            if isinstance(current, dict):
+                current[parts[-1]] = value
+                return True
+            if isinstance(current, list) and parts[-1].isdigit() and int(parts[-1]) < len(current):
+                current[int(parts[-1])] = value
+                return True
+
+        key = parts[-1]
+        changed = False
+        if isinstance(obj, dict):
+            if key in obj:
+                obj[key] = value
+                changed = True
+            for child in obj.values():
+                if isinstance(child, (dict, list)):
+                    changed = cls._set_path_value(child, key, value) or changed
+        elif isinstance(obj, list):
+            for child in obj:
+                if isinstance(child, (dict, list)):
+                    changed = cls._set_path_value(child, key, value) or changed
+        return changed
+
+    @classmethod
+    def _find_path_value(cls, obj: any, path: str, default=None):
+        """优先按路径读取；失败时递归查找同名字段。"""
+        direct = cls._get_path_value(obj, path, None)
+        if direct is not None:
+            return direct
+        key = path.split('.')[-1] if path else ''
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj[key]
+            for child in obj.values():
+                found = cls._find_path_value(child, key, None) if isinstance(child, (dict, list)) else None
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for child in obj:
+                found = cls._find_path_value(child, key, None) if isinstance(child, (dict, list)) else None
+                if found is not None:
+                    return found
+        return default
+
+    @classmethod
+    def _get_page_size_from_request(cls, request_info: dict, size_field: str) -> int:
+        """从 URL query 或 JSON body 中读取 pageSize。"""
+        if not size_field:
+            return 20
+        qs = cls._parse_qs_from_url(request_info.get('url', ''))
+        if size_field in qs and qs[size_field]:
+            return max(int(qs[size_field][0]), 1)
+
+        body = request_info.get('post_data', '')
+        if body:
+            try:
+                body_obj = json.loads(body)
+                value = cls._find_path_value(body_obj, size_field, None)
+                if value is not None:
+                    return max(int(value), 1)
+            except Exception:
+                pass
+        return 20
+
+    @classmethod
+    def _build_pagination_fetch_js(cls, request_info: dict, url: str, post_data: str,
+                                   page_field: str, size_field: str,
+                                   page_num: int) -> str:
+        """生成 JS 代码：按原请求 method/headers/body 重放下一页接口。"""
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        method = (request_info.get('method') or 'GET').upper()
+        clean_headers = cls._clean_fetch_headers(request_info.get('headers') or {})
+
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+        flat_params = {}
+        for k, v in params.items():
+            flat_params[k] = v[-1] if v else ''
+
+        body = post_data or ''
+        body_obj = None
+        if body and method in ('POST', 'PUT', 'PATCH'):
+            try:
+                body_obj = json.loads(body)
+            except Exception:
+                body_obj = None
+
+        if page_field and body_obj is not None:
+            cls._set_path_value(body_obj, page_field, page_num)
+            body = json.dumps(body_obj, ensure_ascii=False)
+        elif page_field:
+            flat_params[page_field] = str(page_num)
+
         new_query = urlencode(flat_params, doseq=True)
         new_url = urlunparse(parsed._replace(query=new_query))
-        # 返回 JS fetch 代码
+        fetch_options = {
+            'method': method,
+            'headers': clean_headers,
+            'credentials': 'include',
+        }
+        if body and method in ('POST', 'PUT', 'PATCH'):
+            fetch_options['body'] = body
+
         return f"""
         (() => {{
-            fetch('{new_url}', {{ credentials: 'include' }})
+            fetch({json.dumps(new_url)}, {json.dumps(fetch_options, ensure_ascii=False)})
                 .then(r => r.text())
                 .catch(e => console.error('[PaginationFetch]', e));
         }})()
@@ -955,8 +1919,8 @@ class BrowserAutomationEngine:
             else:
                 data = json_str
 
-            if not isinstance(data, dict):
-                raise Exception(f'Expected dict, got {type(data).__name__}')
+            if not isinstance(data, (dict, list)):
+                raise Exception(f'Expected JSON object/list, got {type(data).__name__}')
 
         except json.JSONDecodeError as e:
             self.emit_event('task:log', {

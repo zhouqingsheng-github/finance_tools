@@ -27,7 +27,18 @@ export interface ApiListenerConfig {
   api_url: string
   /** 监听模式：capture=抓包生成CURL / extract=拦截响应提取数据 */
   mode: 'capture' | 'extract'
-  /** 动态参数映射：执行时替换请求 body/params 中同名参数的值 */
+  /** 动态参数映射：执行时替换请求 body/params 中同名参数的值
+   * 值支持：
+   *   - 固定值: "2025-04-23"
+   *   - $变量引用: "$partnerId" — 从之前 extract 监听器的提取结果取值
+   *   - $storage:key: "$storage:tokenKey" — 从当前页面 localStorage 取值
+   *   - $storage:key.path: "$storage:authInfo.access_token" — localStorage 取值后按 JSON 路径解析
+   *   - $session:key.path: 同上，从 sessionStorage 取值
+   *   - $cookie:key: "$cookie:tokenName" — 从当前浏览器上下文 cookies 取值
+   *   - $cookie://origin:key: "$cookie:https://tpt.meituan.com:tokenName" — 从指定域名 cookies 取值
+   *   - $storage://origin:key: "$storage:https://tpt.meituan.com:authInfo.token" — 跨域读取 localStorage
+   *   - $session://origin:key: 同上，跨域读取 sessionStorage
+   */
   field_mapping?: Record<string, string>
   /** 响应数据提取配置 */
   response_extract?: {

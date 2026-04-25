@@ -51,3 +51,4 @@ release/
 # Playwright
 playwright-report/
 test-results/
+/docs/
