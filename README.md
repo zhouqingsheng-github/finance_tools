@@ -1,221 +1,189 @@
-# Finance Tools - 自动化浏览器数据采集工具
+# QingFlow 清流
 
-基于 **Electron + Python + Playwright** 的桌面应用，用于多商家端自动登录、验证码处理、凭证管理及数据采集。
+**QingFlow 清流** 是一个面向多商家后台的桌面自动化数据采集与对账工作台。
+
+它的目标不是做验证码破解工具，而是把真实业务里重复、分散、容易出错的后台数据提取流程产品化：自动打开商家后台、自动填表登录、等待用户手动处理验证码、保存浏览器凭证，再通过监听到的业务 API 组装请求并分页获取数据。
+
+## 产品定位
+
+**多商家数据采集与自动化对账工作台**
+
+适合下面这类场景：
+
+- 多个商家后台需要每天登录查看经营、结算、回款、对账数据
+- 登录流程存在验证码，需要用户人工完成一次验证
+- 数据接口隐藏在页面请求里，需要通过浏览器监听 API 后复用
+- 不同商家、不同平台字段不同，需要可配置的字段映射和动态参数
+- 采集结果需要统一落库、查看、导出和后续对账
+
+## 核心业务流程
+
+```mermaid
+flowchart LR
+  A["配置商家"] --> B["自动打开登录页"]
+  B --> C["自动填写账号密码"]
+  C --> D["用户手动处理验证码"]
+  D --> E["保存 Cookies / LocalStorage / SessionStorage"]
+  E --> F["进入业务页面并监听 API"]
+  F --> G["提取 CURL 请求模板"]
+  G --> H["按配置解析动态参数"]
+  H --> I["从第一页开始执行请求"]
+  I --> J["自动分页采集"]
+  J --> K["字段提取与数据落库"]
+  K --> L["仪表盘 / 数据查看 / 导出"]
+```
+
+## 核心能力
+
+| 能力 | 说明 |
+|------|------|
+| 商家配置 | 管理多个商家后台的地址、登录页、账号、密码和选择器 |
+| 自动化登录 | Playwright 打开页面并自动填写表单，验证码由用户手动处理 |
+| 凭证保存 | 保存并加密 Cookies、LocalStorage、SessionStorage 等浏览器状态 |
+| iframe 页面支持 | 点击、监听和抓包逻辑支持业务页面嵌在 iframe 内的情况 |
+| API 监听 | 点击查询按钮后监听目标 API，请求可封装为 CURL 模板 |
+| CURL 回放 | 抓到 CURL 后由引擎主动执行请求，不依赖页面继续加载 |
+| 动态参数 | 支持从 storage、session、cookie、变量中提取参数并替换请求体 |
+| 分页采集 | CURL 模板从第一页开始执行，按分页规则循环获取数据 |
+| 数据落库 | 采集结果存入本地 SQLite，支持查看和导出 |
+| 仪表盘 | 汇总商家数、今日任务、成功率、数据总量、采集趋势和最近活动 |
+
+## 动态参数规则
+
+QingFlow 会先收集浏览器当前上下文中的状态，再按配置提取需要的值。
+
+支持的引用格式：
+
+```text
+$storage:<origin>:<storageKey>.<jsonPath>
+$session:<origin>:<storageKey>.<jsonPath>
+$cookie:<origin>:<cookieName>
+$variableName
+```
+
+示例：
+
+```text
+$storage:https://meituan.example.com:ME_SELECTED_POI_INFO_CACHE_KEY.value.partnerId
+$storage:https://meituan.example.com:ME_SELECTED_POI_INFO_CACHE_KEY.value.poiId
+$cookie:https://meituan.example.com:token
+```
+
+更多自动化业务配置细节见：
+
+- [自动化业务采集配置说明](docs/automation-capture.md)
 
 ## 技术架构
 
-```
+```text
 ┌─────────────────────────────────────────────┐
-│              Electron 桌面应用                 │
+│                QingFlow 桌面应用             │
 │  ┌──────────────────┐  ┌────────────────┐   │
 │  │ Vue 3 渲染进程    │  │ Electron 主进程 │   │
-│  │ (Element Plus)   │◄─►│ IPC 通信      │   │
-│  ├──────────────────┤  ├──┬─────────────┤   │
-│  │ 商家配置/任务调度  │  │ Python 子进程  │   │
-│  │ 数据查看/验证码    │  │  ┌───────────┐│   │
-│  └──────────────────┘  │  │Playwright   ││   │
-│                        │  │(登录+验证码) ││   │
-│                        │  ├───────────┤│   │
-│                        │  │HTTP 采集    ││   │
-│                        │  │(httpx+Cookie)│   │
-│                        │  ├───────────┤│   │
-│                        │  │SQLite 存储  ││   │
-│                        │  └───────────┘│   │
-│                        └────────────────┘   │
+│  │ 仪表盘/配置/数据   │◄─►│ IPC / 窗口管理 │   │
+│  └──────────────────┘  └──────┬─────────┘   │
+│                                │ JSON-RPC    │
+│                         ┌──────▼─────────┐   │
+│                         │ Python 子进程   │   │
+│                         │ Playwright     │   │
+│                         │ HTTP 回放采集   │   │
+│                         │ SQLite 存储     │   │
+│                         └────────────────┘   │
 └─────────────────────────────────────────────┘
 ```
 
-## 核心功能
-
-| 功能 | 描述 |
-|------|------|
-| 商家配置管理 | GUI 界面配置多个商家端 URL、账号密码、选择器规则 |
-| Playwright 自动化 | 浏览器自动化登录，支持表单填写、页面导航 |
-| 验证码处理 | 滑块验证码（OpenCV 自动识别 + 轨迹模拟）、短信验证码（UI 弹窗） |
-| 凭证加密存储 | AES-256-GCM 加密 Cookie，机器指纹派生密钥 |
-| HTTP 数据采集 | httpx 携带 Cookie 调用 API，支持分页、重试、限流 |
-| 本地 SQLite | 存储商家配置、凭证、采集数据，支持 Excel 导出 |
-
 ## 项目结构
 
-```
+```text
 finance_tools/
-├── electron/                  # Electron 主进程（窗口、IPC、Python 管理）
-│   ├── main.ts                # 入口 & IPC 注册
-│   ├── preload.ts             # 安全桥接脚本
-│   └── python-manager.ts      # Python 子进程管理器
+├── electron/                  # Electron 主进程、IPC、Python 子进程管理
 ├── src/                       # Vue 3 前端渲染进程
-│   ├── views/                 # 页面组件
-│   │   ├── Dashboard.vue      # 仪表盘总览
-│   │   ├── MerchantConfig.vue # 商家配置管理
-│   │   ├── TaskCenter.vue     # 任务调度中心
-│   │   ├── DataView.vue       # 数据查看与导出
-│   │   └── CaptchaDialog.vue  # 验证码输入弹窗
+│   ├── views/                 # 仪表盘、商家配置、任务调度、数据查看
 │   ├── components/            # 公共组件
 │   ├── stores/                # Pinia 状态管理
-│   ├── api/                   # API 封装层
-│   └── styles/                # 全局样式 (Tailwind)
+│   ├── api/                   # 前端 API 封装
+│   └── styles/                # 全局样式
 ├── python/                    # Python 后端引擎
-│   ├── main.py                # JSON-RPC 消息循环入口
-│   ├── engine/                # 核心引擎模块
-│   │   ├── login_engine.py    # Playwright 登录状态机
-│   │   ├── captcha_handler.py # 验证码处理器
-│   │   ├── credential_manager.py # 凭证加密管理
-│   │   ├── data_collector.py  # HTTP 数据采集器
-│   │   └── config_parser.py   # 配置解析校验
-│   ├── db/                    # 数据库层 (SQLite)
-│   │   ├── database.py        # 初始化 & 连接管理
-│   │   ├── migrations.py      # Schema 建表 SQL
-│   │   └── repositories.py    # CRUD 操作封装
-│   └── utils/                 # 工具函数
-│       ├── crypto.py          # AES-256-GCM 加解密
-│       ├── logger.py          # 日志配置
-│       └── helpers.py         # 辅助函数
-├── shared/
-│   ├── db/finance_tools.db    # 运行时生成的数据库文件
-│   └── schemas/init.sql       # 初始化建表脚本
+│   ├── main.py                # JSON-RPC 入口
+│   ├── engine/                # 登录、抓包、CURL、浏览器自动化
+│   ├── db/                    # SQLite 初始化、迁移、Repository
+│   └── utils/                 # 加密、日志、工具函数
+├── shared/                    # 共享 schema 和运行时数据库目录
+├── docs/                      # 业务采集配置文档
 ├── package.json               # 根项目配置
-└── README.md                  # 项目文档
+└── README.md
 ```
 
 ## 快速开始
 
 ### 前提条件
 
-- Node.js >= 18.0
+- Node.js >= 18
 - Python >= 3.10
-- npm / pnpm / yarn
+- npm
 
-### 安装步骤
+### 安装依赖
 
 ```bash
-# 1. 克隆或进入项目目录
-cd finance_tools
-
-# 2. 安装前端依赖
+npm install
 cd src && npm install && cd ..
 
-# 3. 安装 Electron 依赖
-npm install
-
-# 4. 创建 Python 虚拟环境并安装依赖
 python3 -m venv python/.venv
-source python/.venv/bin/activate  # Linux/Mac
-# python\.venv\Scripts\activate  # Windows
-
+source python/.venv/bin/activate
 pip install -r python/requirements.txt
-
-# 5. 安装 Playwright 浏览器
 playwright install chromium
-
-# 6. 启动开发模式
-npm run dev
 ```
 
-### 开发模式运行
+### 开发运行
 
-```bash
-# 终端1: 启动 Vite 开发服务器
-cd src && npm run dev
-
-# 终端2: 启动 Electron
-npm run dev:electron
-```
-
-或使用 concurrently 一键启动：
 ```bash
 npm run dev
 ```
 
-### 桌面端打包
+如果需要开启 Python 远程调试：
 
 ```bash
-# Windows x64
+PYTHON_DEBUG=1 PYTHON_DEBUG_HOST=127.0.0.1 PYTHON_DEBUG_PORT=5678 npm run dev
+```
+
+默认不连接调试器，避免 Debug Server 未启动时后端无法启动。
+
+### 构建
+
+```bash
+npm run build:app
+```
+
+打包：
+
+```bash
 npm run build
-
-# macOS: 同时生成 Intel(x64) 和 Apple Silicon(arm64) DMG
 npm run build:mac
-
-# macOS: 只生成 Intel 包
-npm run build:mac:x64
-
-# macOS: 只生成 Apple Silicon 包
-npm run build:mac:arm64
-
-# macOS: 生成 universal 包
-npm run build:mac:universal
 ```
 
-> 注意：如果后续将 `resources/python-runtime` 打入安装包，macOS 也需要准备对应架构的 Python runtime；Intel 包使用 x64 runtime，Apple Silicon 包使用 arm64 runtime，universal 包需要确认所有原生依赖都支持 universal 或在运行时正确选择架构。
+## 数据库
 
-## 使用说明
+当前使用本地 SQLite。核心表包括：
 
-### 业务采集配置文档
+- `merchants`：商家配置
+- `credentials`：加密凭证和浏览器状态
+- `tasks`：采集任务配置
+- `task_runs`：任务运行流水，供仪表盘统计
+- `collected_data`：采集结果
 
-浏览器自动化、抓包 CURL、动态参数、Storage / Session / Cookie 取值规则见：
+## 安全说明
 
-- [自动化业务采集配置说明](docs/automation-capture.md)
+- 凭证和浏览器状态只保存在本机
+- Cookie、密码等敏感信息会加密存储
+- 渲染进程通过 preload 白名单访问 IPC
+- 默认不开启 Python Debug 连接
 
-### 1. 配置商家
+## 品牌
 
-进入「商家配置」页面 → 点击「添加商家」→ 填写：
-- **基本信息**：名称、访问地址、登录页地址
-- **登录凭证**：账号和密码
-- **高级设置**：验证码类型（无/滑块/短信）、CSS 选择器
-
-### 2. 执行采集任务
-
-进入「任务调度」页面 → 点击「开始采集」或「全部开始采集」
-
-系统将自动执行：
-1. 打开浏览器访问商家登录页
-2. 填写账号密码
-3. 如遇滑块验证码 → OpenCV 自动识别缺口并模拟拖拽
-4. 如遇短信验证码 → 弹出 UI 让用户手动输入
-5. 登录成功后提取 Cookie 并加密保存
-6. 使用 Cookie 调用目标 API 获取业务数据
-7. 解析数据并存入本地 SQLite 数据库
-
-### 3. 查看数据
-
-进入「数据查看」页面 → 筛选查看已采集数据 → 支持导出 Excel
-
-## 验证码处理机制
-
-### 滑块验证码
-1. 截取验证码图片
-2. 使用 OpenCV Canny 边缘检测识别缺口位置
-3. 生成拟人化拖拽轨迹（加速→匀速→减速→微调回弹）
-4. Playwright 模拟鼠标拖拽操作
-5. 失败时自动重试，超过阈值则请求手动协助
-
-### 短信验证码
-1. Python 检测到短信验证需求
-2. 通过 JSON-RPC 发送 `captcha:required` 事件给 Electron
-3. Electron 弹出 CaptchaDialog 输入框
-4. 用户输入后通过 `captcha:resolve` 回传结果
-5. Python 将验证码填入提交
-
-## 安全设计
-
-- **Cookie 加密**：AES-256-GCM 对称加密，密钥由机器指纹 PBKDF2 派生
-- **密码存储**：商家密码同样加密存储在本地数据库
-- **IPC 安全**：使用 preload 脚本白名单限制可调用的 IPC 通道
-- **沙箱隔离**：渲染进程启用 contextIsolation 和 sandbox
-- **文件权限**：密钥文件设置为仅当前用户可读写 (chmod 600)
-
-## 通用适配
-
-每个商家的配置完全独立，支持：
-
-- 自定义登录页 CSS 选择器
-- 多个 API 数据接口配置
-- 字段映射转换
-- 分页参数自定义
-- 请求头自定义
-- Cookie 域名白名单
-
-无需修改代码即可适配不同商家系统。
+- 产品名：**QingFlow**
+- 中文名：**清流**
+- 作者：**周清胜 / ZHOUQINGSHENG**
+- 定位：**多商家数据采集与自动化对账工作台**
 
 ## License
 

@@ -1,4 +1,4 @@
-# Finance Tools - Python 后端依赖
+# QingFlow 清流 - Python 后端依赖
 # 核心依赖
 playwright>=1.40.0
 httpx[http2]>=0.25.0

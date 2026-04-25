@@ -7,6 +7,17 @@ import { PythonProcessManager } from './python-manager'
 
 let mainWindow: BrowserWindow | null = null
 let pythonManager: PythonProcessManager | null = null
+const APP_NAME = 'QingFlow'
+const USAGE_EXPIRES_AT = new Date('2026-12-31T23:59:59+08:00')
+const USAGE_EXPIRE_TEXT = '2026年12月31日 23:59:59'
+
+app.setName(APP_NAME)
+
+function getLogoPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'assets', 'qingflow-logo.png')
+    : join(__dirname, '..', 'src', 'assets', 'qingflow-logo.png')
+}
 
 // ====== 日志系统：输出到用户数据目录的 app.log ======
 function initLogger(): void {
@@ -58,8 +69,19 @@ initLogger()
 function findPython(): string {
   // 1. 打包后：优先使用内嵌 Python 运行时
   if (app.isPackaged) {
-    const embeddedPython = join(process.resourcesPath, 'python-runtime', 'python.exe')
-    if (existsSync(embeddedPython)) {
+    const embeddedPythonCandidates = process.platform === 'win32'
+      ? [join(process.resourcesPath, 'python-runtime', 'python.exe')]
+      : [
+          join(process.resourcesPath, 'python-runtime', 'bin', 'python3'),
+          join(process.resourcesPath, 'python-runtime', 'bin', 'python')
+        ]
+
+    for (const embeddedPython of embeddedPythonCandidates) {
+      if (!existsSync(embeddedPython)) {
+        console.log('[findPython] No embedded Python found at:', embeddedPython)
+        continue
+      }
+
       try {
         const version = execFileSync(embeddedPython, ['--version'], {
           encoding: 'utf-8',
@@ -71,8 +93,6 @@ function findPython(): string {
       } catch (e) {
         console.error('[findPython] Embedded Python exists but failed to run:', e)
       }
-    } else {
-      console.log('[findPython] No embedded Python found at:', embeddedPython)
     }
   }
 
@@ -113,6 +133,7 @@ function createWindow(): void {
   const { width: workWidth, height: workHeight } = screen.getPrimaryDisplay().workAreaSize
   const windowWidth = Math.min(Math.max(Math.round(workWidth * 0.9), 1180), 1560)
   const windowHeight = Math.min(Math.max(Math.round(workHeight * 0.88), 760), 980)
+  const logoPath = getLogoPath()
 
   mainWindow = new BrowserWindow({
     width: windowWidth,
@@ -120,7 +141,8 @@ function createWindow(): void {
     minWidth: 1024,
     minHeight: 680,
     center: true,
-    title: 'Finance Tools - 数据采集工具',
+    title: 'QingFlow 清流 - 多商家数据采集与自动化对账工作台',
+    icon: logoPath,
     frame: false,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#020617',
@@ -154,8 +176,9 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show()
-    // 始终打开 DevTools（方便调试打包后的问题）
-    mainWindow?.webContents.openDevTools({ mode: 'detach' })
+    if (process.env.OPEN_DEVTOOLS === '1') {
+      mainWindow?.webContents.openDevTools({ mode: 'detach' })
+    }
   })
 
   mainWindow.on('closed', () => {
@@ -303,9 +326,38 @@ function registerIpcHandlers(): void {
   ipcMain.handle('window:close', async () => {
     mainWindow?.close()
   })
+
+  ipcMain.handle('app:quit', async () => {
+    pythonManager?.stop()
+    app.quit()
+  })
+
+  ipcMain.handle('window:toggle-devtools', async () => {
+    if (!mainWindow) return false
+    const webContents = mainWindow.webContents
+    if (webContents.isDevToolsOpened()) {
+      webContents.closeDevTools()
+      return false
+    }
+    webContents.openDevTools({ mode: 'detach' })
+    return true
+  })
 }
 
 app.whenReady().then(() => {
+  if (Date.now() > USAGE_EXPIRES_AT.getTime()) {
+    dialog.showErrorBox('QingFlow 使用期限已到期', `当前授权使用截止时间为 ${USAGE_EXPIRE_TEXT}。\n请联系周清胜续期后继续使用。`)
+    app.quit()
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    const logoPath = getLogoPath()
+    if (existsSync(logoPath)) {
+      app.dock.setIcon(logoPath)
+    }
+  }
+
   createWindow()
   
   // 查找可用的 Python 可执行文件

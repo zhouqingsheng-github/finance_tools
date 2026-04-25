@@ -88,7 +88,18 @@ jobs:
           retention-days: 30
 
   build-macos:
-    runs-on: macos-latest
+    name: build-macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+            build_script: build:mac:x64
+          - arch: arm64
+            runner: macos-latest
+            build_script: build:mac:arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,27 +115,35 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Node dependencies
         run: |
           npm install
           (cd src && npm install)
-          python -m pip install --upgrade pip
-          pip install -r python/requirements.txt
+
+      - name: Create packaged Python runtime
+        run: |
+          python -m venv resources/python-runtime
+          resources/python-runtime/bin/python -m pip install --upgrade pip
+          resources/python-runtime/bin/python -m pip install -r python/requirements.txt
+          echo "Python runtime arch:"
+          resources/python-runtime/bin/python -c "import platform; print(platform.machine())"
+          echo "Python runtime size:"
+          du -sh resources/python-runtime/
 
       - name: Install Playwright browsers (packaged)
         run: |
           # 指定安装目录到 resources/ms-playwright/，随 extraResources 一起打包进 DMG
           PLAYWRIGHT_BROWSERS_PATH="$PWD/resources/ms-playwright" \
-            python -m playwright install chromium
+            resources/python-runtime/bin/python -m playwright install chromium
           echo "Playwright browser size:"
           du -sh resources/ms-playwright/
 
-      - name: Build (macOS DMG)
-        run: npm run build:mac
+      - name: Build (macOS ${{ matrix.arch }} DMG)
+        run: npm run ${{ matrix.build_script }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FinanceTools-macOS-${{ github.sha }}
+          name: FinanceTools-macOS-${{ matrix.arch }}-${{ github.sha }}
           path: release/*.dmg
           retention-days: 30

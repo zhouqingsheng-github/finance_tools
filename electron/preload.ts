@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  platform: process.platform,
+
   // Python 引擎状态
   pythonStart: () => ipcRenderer.invoke('python:start'),
   pythonStatus: () => ipcRenderer.invoke('python:status'),
@@ -48,5 +50,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 窗口控制
   minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
   maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
+  toggleDevTools: () => ipcRenderer.invoke('window:toggle-devtools'),
   closeWindow: () => ipcRenderer.invoke('window:close'),
+  quitApp: () => ipcRenderer.invoke('app:quit'),
 })

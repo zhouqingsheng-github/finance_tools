@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const electron_1 = require("electron");
 electron_1.contextBridge.exposeInMainWorld('electronAPI', {
+    platform: process.platform,
     // Python 引擎状态
     pythonStart: () => electron_1.ipcRenderer.invoke('python:start'),
     pythonStatus: () => electron_1.ipcRenderer.invoke('python:status'),
@@ -42,6 +43,8 @@ electron_1.contextBridge.exposeInMainWorld('electronAPI', {
     // 窗口控制
     minimizeWindow: () => electron_1.ipcRenderer.invoke('window:minimize'),
     maximizeWindow: () => electron_1.ipcRenderer.invoke('window:maximize'),
+    toggleDevTools: () => electron_1.ipcRenderer.invoke('window:toggle-devtools'),
     closeWindow: () => electron_1.ipcRenderer.invoke('window:close'),
+    quitApp: () => electron_1.ipcRenderer.invoke('app:quit'),
 });
 //# sourceMappingURL=preload.js.map

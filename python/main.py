@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Finance Tools - Python 后端引擎入口
+QingFlow 清流 - Python 后端引擎入口
 JSON-RPC 消息循环，处理来自 Electron 主进程的请求
 """
 

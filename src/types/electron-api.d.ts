@@ -21,6 +21,8 @@ export interface DashboardSummary {
 }
 
 export interface ElectronAPI {
+  platform: NodeJS.Platform
+
   // Python 引擎状态
   pythonStart: () => Promise<{ success: boolean; status: string }>
   pythonStatus: () => Promise<string>
@@ -71,5 +73,7 @@ export interface ElectronAPI {
   // 窗口控制
   minimizeWindow: () => Promise<void>
   maximizeWindow: () => Promise<void>
+  toggleDevTools: () => Promise<boolean>
   closeWindow: () => Promise<void>
+  quitApp: () => Promise<void>
 }

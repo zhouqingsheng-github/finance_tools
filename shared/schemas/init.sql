@@ -1,4 +1,4 @@
--- Finance Tools 数据库初始化脚本
+-- QingFlow 清流 数据库初始化脚本
 -- SQLite Schema Definition
 
 -- 商家配置表
@@ -101,4 +101,3 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_started_at ON task_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_task_runs_task ON task_runs(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_runs_merchant ON task_runs(merchant_id);
-

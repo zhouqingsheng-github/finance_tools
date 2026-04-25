@@ -1,1 +1,1 @@
-{"name": "finance-tools-electron", "version": "1.0.0", "private": true, "main": "main.js", "scripts": {"build": "tsc"}, "devDependencies": {"@types/node": "^20.11.0", "electron-builder": "^24.13.3"}}
+{"name": "qingflow-electron", "version": "1.0.0", "private": true, "main": "main.js", "scripts": {"build": "tsc"}, "devDependencies": {"@types/node": "^20.11.0", "electron-builder": "^24.13.3"}}
