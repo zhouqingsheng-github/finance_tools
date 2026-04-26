@@ -124,10 +124,10 @@ jobs:
         run: |
           python -m venv --copies resources/python-runtime
           resources/python-runtime/bin/python -m pip install --upgrade pip
-          resources/python-runtime/bin/python -m pip install -r python/requirements.txt
+          resources/python-runtime/bin/python -m pip install --no-cache-dir -r python/requirements.txt
           echo "Python runtime binaries:"
           ls -la resources/python-runtime/bin/python*
-          resources/python-runtime/bin/python -c "import playwright; print('Playwright Python package OK')"
+          resources/python-runtime/bin/python -c "import greenlet._greenlet; from playwright.async_api import async_playwright; print('Playwright native imports OK')"
           echo "Python runtime arch:"
           resources/python-runtime/bin/python -c "import platform; print(platform.machine())"
           echo "Python runtime size:"
@@ -164,6 +164,13 @@ jobs:
           if [ "${status:-0}" != "0" ]; then
             exit "$status"
           fi
+
+          echo "Checking packaged Python native extensions:"
+          find release -path '*/site-packages/greenlet/_greenlet*.so' -print -quit | grep -q . || {
+            echo "Missing packaged greenlet native extension"
+            find release -path '*/site-packages/greenlet/*' -print || true
+            exit 1
+          }
 
           echo "Generated DMG files:"
           ls -la release/*.dmg

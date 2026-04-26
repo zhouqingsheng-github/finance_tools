@@ -1,6 +1,7 @@
 # QingFlow 清流 - Python 后端依赖
 # 核心依赖
 playwright>=1.40.0
+greenlet>=3.0.0
 httpx[http2]>=0.25.0
 
 # 数据处理
