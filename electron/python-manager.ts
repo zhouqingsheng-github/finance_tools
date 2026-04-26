@@ -57,6 +57,11 @@ export class PythonProcessManager {
 
     try {
       const scriptPath = this.args[0]
+      console.log('[PythonManager] Starting process')
+      console.log('[PythonManager] pythonExe:', this.pythonExe)
+      console.log('[PythonManager] args:', this.args)
+      console.log('[PythonManager] cwd:', path.dirname(scriptPath))
+      console.log('[PythonManager] FINANCE_TOOLS_DB:', this.options.extraEnv?.FINANCE_TOOLS_DB || process.env.FINANCE_TOOLS_DB || '')
       
       this.process = spawn(this.pythonExe, this.args, {
         cwd: path.dirname(scriptPath),

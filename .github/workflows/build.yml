@@ -122,9 +122,11 @@ jobs:
 
       - name: Create packaged Python runtime
         run: |
-          python -m venv resources/python-runtime
+          python -m venv --copies resources/python-runtime
           resources/python-runtime/bin/python -m pip install --upgrade pip
           resources/python-runtime/bin/python -m pip install -r python/requirements.txt
+          echo "Python runtime binaries:"
+          ls -la resources/python-runtime/bin/python*
           echo "Python runtime arch:"
           resources/python-runtime/bin/python -c "import platform; print(platform.machine())"
           echo "Python runtime size:"
