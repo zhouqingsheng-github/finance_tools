@@ -139,7 +139,25 @@ jobs:
           du -sh resources/ms-playwright/
 
       - name: Build (macOS ${{ matrix.arch }} DMG)
-        run: npm run ${{ matrix.build_script }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "=== macOS DMG build attempt ${attempt}/3 ==="
+            if npm run ${{ matrix.build_script }}; then
+              exit 0
+            fi
+
+            status=$?
+            echo "Build attempt ${attempt} failed with exit code ${status}."
+            echo "Cleaning up mounted disk images before retry..."
+            hdiutil info || true
+            osascript -e 'tell application "Finder" to quit' || true
+            for disk in $(hdiutil info | awk '/^\/dev\/disk/ { print $1 }'); do
+              hdiutil detach "$disk" -force || true
+            done
+            sleep 15
+          done
+
+          exit ${status:-1}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
