@@ -162,6 +162,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FinanceTools-macOS-${{ matrix.arch }}-${{ github.sha }}
+          name: QingFlow-macOS-${{ matrix.arch }}-${{ github.sha }}
           path: release/*.dmg
           retention-days: 30
