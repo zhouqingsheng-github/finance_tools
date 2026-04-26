@@ -29,7 +29,7 @@
   "build": {
     "appId": "com.zhouqingsheng.qingflow",
     "productName": "QingFlow",
-    "icon": "resources/qingflow.ico",
+    "icon": "src/assets/qingflow-logo.png",
     "directories": {
       "output": "release"
     },
@@ -57,6 +57,7 @@
       "uninstallerIcon": "resources/qingflow.ico"
     },
     "mac": {
+      "icon": "src/assets/qingflow-logo.png",
       "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }]
     }
   }
