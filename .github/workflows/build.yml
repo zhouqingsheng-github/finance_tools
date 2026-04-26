@@ -97,9 +97,9 @@ jobs:
           - arch: x64
             runner: macos-15-intel
             build_script: build:mac:x64
-#          - arch: arm64
-#            runner: macos-latest
-#            build_script: build:mac:arm64
+          - arch: arm64
+            runner: macos-latest
+            build_script: build:mac:arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -165,5 +165,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: QingFlow-macOS-${{ matrix.arch }}-${{ github.sha }}
-          path: release/*.dmg
+          path: release/*-${{ matrix.arch }}.dmg
           retention-days: 30
