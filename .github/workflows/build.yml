@@ -145,7 +145,8 @@ jobs:
           for attempt in 1 2 3; do
             echo "=== macOS DMG build attempt ${attempt}/3 ==="
             if npm run ${{ matrix.build_script }}; then
-              exit 0
+              status=0
+              break
             fi
 
             status=$?
@@ -159,11 +160,22 @@ jobs:
             sleep 15
           done
 
-          exit ${status:-1}
+          if [ "${status:-0}" != "0" ]; then
+            exit "$status"
+          fi
+
+          echo "Generated DMG files:"
+          ls -la release/*.dmg
+          dmg_count=$(find release -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')
+          if [ "$dmg_count" != "1" ]; then
+            echo "Expected exactly one DMG for ${{ matrix.arch }}, found $dmg_count"
+            exit 1
+          fi
+          mv "$(find release -maxdepth 1 -name '*.dmg' -print -quit)" "release/QingFlow-macOS-${{ matrix.arch }}.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: QingFlow-macOS-${{ matrix.arch }}-${{ github.sha }}
-          path: release/*-${{ matrix.arch }}.dmg
+          path: release/QingFlow-macOS-${{ matrix.arch }}.dmg
           retention-days: 30
