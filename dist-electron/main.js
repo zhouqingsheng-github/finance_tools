@@ -343,7 +343,18 @@ electron_1.app.whenReady().then(() => {
     const pythonDir = electron_1.app.isPackaged
         ? (0, path_1.join)(process.resourcesPath, 'python')
         : (0, path_1.join)(__dirname, '..', 'python');
-    process.env.PYTHONPATH = pythonDir;
+    const pythonPathEntries = [pythonDir];
+    if (electron_1.app.isPackaged && process.platform === 'darwin') {
+        const packagedSitePackages = (0, path_1.join)(process.resourcesPath, 'python-runtime', 'lib', 'python3.11', 'site-packages');
+        if ((0, fs_1.existsSync)(packagedSitePackages)) {
+            pythonPathEntries.push(packagedSitePackages);
+            console.log('[Main] Packaged Python site-packages:', packagedSitePackages);
+        }
+        else {
+            console.warn('[Main] Packaged Python site-packages not found:', packagedSitePackages);
+        }
+    }
+    process.env.PYTHONPATH = pythonPathEntries.join(path_1.delimiter);
     // 强制 UTF-8 编码，解决 Windows 打包后 GBK 编码导致 emoji/中文报错
     process.env.PYTHONIOENCODING = 'utf-8';
     // 打包后：数据库存放在用户数据目录，重装应用不丢失数据

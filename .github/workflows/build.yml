@@ -127,6 +127,7 @@ jobs:
           resources/python-runtime/bin/python -m pip install -r python/requirements.txt
           echo "Python runtime binaries:"
           ls -la resources/python-runtime/bin/python*
+          resources/python-runtime/bin/python -c "import playwright; print('Playwright Python package OK')"
           echo "Python runtime arch:"
           resources/python-runtime/bin/python -c "import platform; print(platform.machine())"
           echo "Python runtime size:"

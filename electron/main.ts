@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, screen } from 'electron'
-import { join, dirname } from 'path'
+import { join, delimiter } from 'path'
 import { createWriteStream, existsSync } from 'fs'
 import { cp } from 'fs/promises'
 import { execFileSync } from 'child_process'
@@ -386,7 +386,17 @@ app.whenReady().then(() => {
   const pythonDir = app.isPackaged
     ? join(process.resourcesPath, 'python')
     : join(__dirname, '..', 'python')
-  process.env.PYTHONPATH = pythonDir
+  const pythonPathEntries = [pythonDir]
+  if (app.isPackaged && process.platform === 'darwin') {
+    const packagedSitePackages = join(process.resourcesPath, 'python-runtime', 'lib', 'python3.11', 'site-packages')
+    if (existsSync(packagedSitePackages)) {
+      pythonPathEntries.push(packagedSitePackages)
+      console.log('[Main] Packaged Python site-packages:', packagedSitePackages)
+    } else {
+      console.warn('[Main] Packaged Python site-packages not found:', packagedSitePackages)
+    }
+  }
+  process.env.PYTHONPATH = pythonPathEntries.join(delimiter)
   // 强制 UTF-8 编码，解决 Windows 打包后 GBK 编码导致 emoji/中文报错
   process.env.PYTHONIOENCODING = 'utf-8'
   
