@@ -1475,6 +1475,7 @@ class BrowserAutomationEngine:
                     'status': 'error', 'progress': 0,
                     'message': f'未拦截到目标接口请求'
                 })
+                raise Exception(f'未拦截到目标接口请求: {api_url}')
         finally:
             try:
                 await page.unroute('**/*', on_route)
@@ -1588,7 +1589,13 @@ class BrowserAutomationEngine:
                             'message': f'⚠️ {max_wait}s 内未拦截到匹配 {api_url} 的响应',
                             'timestamp': time.time()}
                 })
-                return []
+                self.emit_event('task:progress', {
+                    'taskId': task_id, 'merchantId': merchant_id,
+                    'status': 'error',
+                    'progress': 0,
+                    'message': '未拦截到目标接口响应'
+                })
+                raise Exception(f'未拦截到目标接口响应: {api_url}')
 
             # 处理第一个响应
             first_resp = captured_responses[0]
