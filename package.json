@@ -9,6 +9,7 @@
     "dev:vue": "cd src && npx vite",
     "dev:electron": "npx tsc -p electron/tsconfig.json && node scripts/wait-vite.js && electron .",
     "dev:electron:fast": "node scripts/wait-vite.js && electron .",
+    "build:icons": "node scripts/make-windows-icon.js",
     "build:electron": "npx tsc -p electron/tsconfig.json",
     "build:vue": "cd src && npx vite build",
     "build:app": "npm run build:vue && npm run build:electron",
@@ -28,6 +29,7 @@
   "build": {
     "appId": "com.zhouqingsheng.qingflow",
     "productName": "QingFlow",
+    "icon": "resources/qingflow.ico",
     "directories": {
       "output": "release"
     },
@@ -44,12 +46,15 @@
       { "from": "resources/ms-playwright", "to": "ms-playwright" }
     ],
     "win": {
+      "icon": "resources/qingflow.ico",
       "target": [{ "target": "nsis", "arch": ["x64"] }]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "installerIcon": "resources/qingflow.ico",
+      "uninstallerIcon": "resources/qingflow.ico"
     },
     "mac": {
       "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }]

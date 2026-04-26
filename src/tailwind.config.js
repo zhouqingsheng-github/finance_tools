@@ -2,8 +2,12 @@
 export default {
   content: [
     './index.html',
-    './*/*.{vue,js,ts,jsx,tsx}',
-    './**/*.{vue,js,ts,jsx,tsx}'
+    './App.vue',
+    './main.ts',
+    './components/**/*.{vue,js,ts,jsx,tsx}',
+    './views/**/*.{vue,js,ts,jsx,tsx}',
+    './router/**/*.{vue,js,ts,jsx,tsx}',
+    './stores/**/*.{vue,js,ts,jsx,tsx}'
   ],
   theme: {
     extend: {

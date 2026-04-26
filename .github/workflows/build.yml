@@ -83,7 +83,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FinanceTools-Windows-x64-${{ github.sha }}
+          name: QingFlow-Windows-x64-${{ github.sha }}
           path: release/*.exe
           retention-days: 30
 
@@ -97,9 +97,9 @@ jobs:
           - arch: x64
             runner: macos-15-intel
             build_script: build:mac:x64
-          - arch: arm64
-            runner: macos-latest
-            build_script: build:mac:arm64
+#          - arch: arm64
+#            runner: macos-latest
+#            build_script: build:mac:arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
