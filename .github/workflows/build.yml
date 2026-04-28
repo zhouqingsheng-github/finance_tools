@@ -120,11 +120,10 @@ jobs:
           npm install
           (cd src && npm install)
 
-      - name: Create packaged Python runtime
+      - name: Create packaged Python runtime and browsers
         run: |
-          python -m venv --copies resources/python-runtime
-          resources/python-runtime/bin/python -m pip install --upgrade pip
-          resources/python-runtime/bin/python -m pip install --no-cache-dir -r python/requirements.txt
+          npm run prepare:python:mac
+
           echo "Python runtime binaries:"
           ls -la resources/python-runtime/bin/python*
           resources/python-runtime/bin/python -c "import greenlet._greenlet; from playwright.async_api import async_playwright; print('Playwright native imports OK')"
@@ -132,12 +131,6 @@ jobs:
           resources/python-runtime/bin/python -c "import platform; print(platform.machine())"
           echo "Python runtime size:"
           du -sh resources/python-runtime/
-
-      - name: Install Playwright browsers (packaged)
-        run: |
-          # 指定安装目录到 resources/ms-playwright/，随 extraResources 一起打包进 DMG
-          PLAYWRIGHT_BROWSERS_PATH="$PWD/resources/ms-playwright" \
-            resources/python-runtime/bin/python -m playwright install chromium
           echo "Playwright browser size:"
           du -sh resources/ms-playwright/
 
@@ -166,9 +159,24 @@ jobs:
           fi
 
           echo "Checking packaged Python native extensions:"
-          find release -path '*/site-packages/greenlet/_greenlet*.so' -print -quit | grep -q . || {
+          app_path="$(find release -maxdepth 2 -name 'QingFlow.app' -type d -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo "QingFlow.app not found under release/"
+            find release -maxdepth 3 -print
+            exit 1
+          fi
+
+          app_python="$app_path/Contents/Resources/python-runtime/bin/python"
+          if [ ! -x "$app_python" ]; then
+            echo "Packaged Python is missing or not executable: $app_python"
+            ls -la "$app_path/Contents/Resources/python-runtime/bin/" || true
+            exit 1
+          fi
+
+          "$app_python" -c "import sys, greenlet._greenlet, playwright; print(sys.executable); print(sys.version); print(greenlet._greenlet.__file__); print(playwright.__file__)"
+          find "$app_path/Contents/Resources/python-runtime" -path '*/site-packages/greenlet/_greenlet*.so' -print -quit | grep -q . || {
             echo "Missing packaged greenlet native extension"
-            find release -path '*/site-packages/greenlet/*' -print || true
+            find "$app_path/Contents/Resources/python-runtime" -path '*/site-packages/greenlet/*' -print || true
             exit 1
           }
 

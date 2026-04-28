@@ -47,6 +47,8 @@ logs/
 
 # Electron
 release/
+resources/python-runtime/
+resources/ms-playwright/
 
 # Playwright
 playwright-report/

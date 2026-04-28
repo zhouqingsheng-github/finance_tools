@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain, dialog, screen } from 'electron'
 import { join, delimiter } from 'path'
-import { createWriteStream, existsSync } from 'fs'
+import { createWriteStream, existsSync, readdirSync } from 'fs'
 import { cp } from 'fs/promises'
 import { execFileSync } from 'child_process'
 import { PythonProcessManager } from './python-manager'
@@ -94,6 +94,15 @@ function findPython(): string {
         console.error('[findPython] Embedded Python exists but failed to run:', e)
       }
     }
+
+    const message = [
+      '打包版缺少内嵌 Python 运行时，无法启动 Python 后端。',
+      `请先运行 npm run prepare:python:mac 生成 ${join('resources', 'python-runtime')}，再重新打包应用。`
+    ].join('\n')
+    console.error('[findPython] FATAL:', message)
+    dialog.showErrorBox('QingFlow 启动失败', message)
+    app.quit()
+    return ''
   }
 
   // 2. 回退到系统 Python
@@ -127,6 +136,27 @@ function findPython(): string {
   
   console.error(`[findPython] WARNING: No Python available!`)
   return candidates[0]
+}
+
+function findPackagedSitePackages(): string | null {
+  const runtimeLib = join(process.resourcesPath, 'python-runtime', 'lib')
+  if (!existsSync(runtimeLib)) return null
+
+  try {
+    const pythonDirs = readdirSync(runtimeLib)
+      .filter((name) => /^python\d+\.\d+$/.test(name))
+      .sort()
+      .reverse()
+
+    for (const pythonDir of pythonDirs) {
+      const sitePackages = join(runtimeLib, pythonDir, 'site-packages')
+      if (existsSync(sitePackages)) return sitePackages
+    }
+  } catch (error) {
+    console.warn('[Main] Failed to inspect packaged Python lib:', error)
+  }
+
+  return null
 }
 
 function createWindow(): void {
@@ -362,6 +392,7 @@ app.whenReady().then(() => {
   
   // 查找可用的 Python 可执行文件
   const pythonExe = findPython()
+  if (!pythonExe) return
   console.log('[Main] Using python executable:', pythonExe)
   
   // 打包后：python/ 在 app.asar.unpacked/resources/python/
@@ -388,12 +419,12 @@ app.whenReady().then(() => {
     : join(__dirname, '..', 'python')
   const pythonPathEntries = [pythonDir]
   if (app.isPackaged && process.platform === 'darwin') {
-    const packagedSitePackages = join(process.resourcesPath, 'python-runtime', 'lib', 'python3.11', 'site-packages')
-    if (existsSync(packagedSitePackages)) {
+    const packagedSitePackages = findPackagedSitePackages()
+    if (packagedSitePackages) {
       pythonPathEntries.push(packagedSitePackages)
       console.log('[Main] Packaged Python site-packages:', packagedSitePackages)
     } else {
-      console.warn('[Main] Packaged Python site-packages not found:', packagedSitePackages)
+      console.warn('[Main] Packaged Python site-packages not found in python-runtime/lib')
     }
   }
   process.env.PYTHONPATH = pythonPathEntries.join(delimiter)

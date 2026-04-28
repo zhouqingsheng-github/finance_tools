@@ -159,9 +159,12 @@ npm run build:app
 打包：
 
 ```bash
+npm run prepare:python:mac
 npm run build
 npm run build:mac
 ```
+
+macOS 打包前必须先运行 `npm run prepare:python:mac`，它会把 Python 运行时、`greenlet` 等原生依赖，以及 Playwright Chromium 浏览器安装到 `resources/`，避免打包版回退到 `/usr/bin/python3` 后与 `python-runtime/lib/python*/site-packages` 混用。
 
 ## 数据库
 

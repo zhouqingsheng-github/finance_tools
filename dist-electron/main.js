@@ -90,6 +90,14 @@ function findPython() {
                 console.error('[findPython] Embedded Python exists but failed to run:', e);
             }
         }
+        const message = [
+            '打包版缺少内嵌 Python 运行时，无法启动 Python 后端。',
+            `请先运行 npm run prepare:python:mac 生成 ${(0, path_1.join)('resources', 'python-runtime')}，再重新打包应用。`
+        ].join('\n');
+        console.error('[findPython] FATAL:', message);
+        electron_1.dialog.showErrorBox('QingFlow 启动失败', message);
+        electron_1.app.quit();
+        return '';
     }
     // 2. 回退到系统 Python
     const candidates = process.platform === 'win32'
@@ -121,6 +129,26 @@ function findPython() {
     }
     console.error(`[findPython] WARNING: No Python available!`);
     return candidates[0];
+}
+function findPackagedSitePackages() {
+    const runtimeLib = (0, path_1.join)(process.resourcesPath, 'python-runtime', 'lib');
+    if (!(0, fs_1.existsSync)(runtimeLib))
+        return null;
+    try {
+        const pythonDirs = (0, fs_1.readdirSync)(runtimeLib)
+            .filter((name) => /^python\d+\.\d+$/.test(name))
+            .sort()
+            .reverse();
+        for (const pythonDir of pythonDirs) {
+            const sitePackages = (0, path_1.join)(runtimeLib, pythonDir, 'site-packages');
+            if ((0, fs_1.existsSync)(sitePackages))
+                return sitePackages;
+        }
+    }
+    catch (error) {
+        console.warn('[Main] Failed to inspect packaged Python lib:', error);
+    }
+    return null;
 }
 function createWindow() {
     const { width: workWidth, height: workHeight } = electron_1.screen.getPrimaryDisplay().workAreaSize;
@@ -320,6 +348,8 @@ electron_1.app.whenReady().then(() => {
     createWindow();
     // 查找可用的 Python 可执行文件
     const pythonExe = findPython();
+    if (!pythonExe)
+        return;
     console.log('[Main] Using python executable:', pythonExe);
     // 打包后：python/ 在 app.asar.unpacked/resources/python/
     let pythonScript;
@@ -345,13 +375,13 @@ electron_1.app.whenReady().then(() => {
         : (0, path_1.join)(__dirname, '..', 'python');
     const pythonPathEntries = [pythonDir];
     if (electron_1.app.isPackaged && process.platform === 'darwin') {
-        const packagedSitePackages = (0, path_1.join)(process.resourcesPath, 'python-runtime', 'lib', 'python3.11', 'site-packages');
-        if ((0, fs_1.existsSync)(packagedSitePackages)) {
+        const packagedSitePackages = findPackagedSitePackages();
+        if (packagedSitePackages) {
             pythonPathEntries.push(packagedSitePackages);
             console.log('[Main] Packaged Python site-packages:', packagedSitePackages);
         }
         else {
-            console.warn('[Main] Packaged Python site-packages not found:', packagedSitePackages);
+            console.warn('[Main] Packaged Python site-packages not found in python-runtime/lib');
         }
     }
     process.env.PYTHONPATH = pythonPathEntries.join(path_1.delimiter);

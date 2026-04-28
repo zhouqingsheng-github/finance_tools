@@ -18,6 +18,7 @@
     "build:mac:x64": "npm run build:app && electron-builder --mac --x64 --publish never",
     "build:mac:arm64": "npm run build:app && electron-builder --mac --arm64 --publish never",
     "build:mac:universal": "npm run build:app && electron-builder --mac --universal --publish never",
+    "prepare:python:mac": "bash scripts/prepare-mac-python-runtime.sh",
     "preview": "cd src && npx vite preview"
   },
   "devDependencies": {
