@@ -166,6 +166,15 @@ npm run build:mac
 
 macOS 打包前必须先运行 `npm run prepare:python:mac`，它会把 Python 运行时、`greenlet` 等原生依赖，以及 Playwright Chromium 浏览器安装到 `resources/`，避免打包版回退到 `/usr/bin/python3` 后与 `python-runtime/lib/python*/site-packages` 混用。
 
+### GitHub tag 打包发布
+
+GitHub Actions 只在推送 `v*` 或 `release*` tag 时打包，并把 Windows EXE、macOS x64 DMG、macOS arm64 DMG 直接上传到对应 GitHub Release，不再占用 Actions artifact 存储额度。
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
 ## 数据库
 
 当前使用本地 SQLite。核心表包括：
